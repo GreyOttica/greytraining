@@ -2,7 +2,7 @@
    App files are precached and fetched network-first, so updates arrive on the next launch.
    Fonts, icons and libraries from the CDNs are cached on first use.
    Bump VERSION when the file list below changes. */
-var VERSION = 'gt-v2';
+var VERSION = 'gt-v3';
 var APP = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/data.js', './js/store.js', './js/cloud.js', './js/ui.js', './js/app.js',
@@ -13,7 +13,7 @@ var APP = [
 var CDN = [
   'https://unpkg.com/htm@3.1.1/preact/standalone.umd.js',
   'https://unpkg.com/@phosphor-icons/web@2.1.1',
-  'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js'
+  'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js'
 ];
 
 self.addEventListener('install', function (e) {

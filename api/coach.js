@@ -11,7 +11,7 @@
 // Request:  POST /api/coach  Authorization: Bearer <Supabase access token>
 //           { messages: [{ role: 'user'|'assistant', content: string }], context: object }
 // Response: { reply, provider, model, fallbackFrom? }  or  { error } with a 4xx/5xx status
-import { askCoach, aiInfo, env, CoachError } from '../lib/ai.js';
+import { askCoach, aiInfo, env, supabaseUrl, CoachError } from '../lib/ai.js';
 
 const MAX_MESSAGES = 20;
 const MAX_CHARS = 4000;
@@ -37,9 +37,9 @@ function bad(res, status, error) { return res.status(status).json({ error }); }
 
 // Who is calling? Verifies the Supabase access token with the Supabase Auth API.
 async function verifyUser(authHeader) {
-  const url = env('SUPABASE_URL'), key = env('SUPABASE_ANON_KEY');
+  const url = supabaseUrl(), key = env('SUPABASE_ANON_KEY');
   if (!url || !key || !authHeader || !authHeader.startsWith('Bearer ')) return null;
-  const r = await fetch(`${url.replace(/\/$/, '')}/auth/v1/user`, { headers: { apikey: key, Authorization: authHeader }, signal: AbortSignal.timeout(8000) });
+  const r = await fetch(`${url}/auth/v1/user`, { headers: { apikey: key, Authorization: authHeader }, signal: AbortSignal.timeout(8000) });
   if (!r.ok) return null;
   return r.json();
 }

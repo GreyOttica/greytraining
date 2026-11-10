@@ -253,7 +253,10 @@
   // ---------- start-up ----------
   loadConfig().then(function (cfg) {
     if (!cfg || !window.supabase || !window.supabase.createClient) return;
-    client = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
+    // Project URL only: a pasted ".../rest/v1/" API URL (or an old cached config) still works
+    var projectUrl = cfg.supabaseUrl;
+    try { projectUrl = new URL(cfg.supabaseUrl).origin; } catch (e) {}
+    client = window.supabase.createClient(projectUrl, cfg.supabaseAnonKey, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'greytraining.auth' },
       global: { fetch: timedFetch }
     });
