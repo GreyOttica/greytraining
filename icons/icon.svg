@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#000"/>
+  <text x="256" y="300" text-anchor="middle" font-family="Mulish, 'Segoe UI', Arial, sans-serif" font-weight="900" font-size="210" letter-spacing="-8" fill="#FFFBF9">GT</text>
+  <rect x="146" y="332" width="220" height="26" fill="#E95145"/>
+</svg>

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="it" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GreyTraining</title>
+<meta name="description" content="Coach personale per palestra, corsa, piscina e nutrizione.">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GreyTraining">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Mulish:wght@300;400;500;600;700;800;900&display=swap">
+<link rel="stylesheet" href="css/app.css">
+<!-- Icons: Phosphor 2.1.1 (light / fill / bold) -->
+<script src="https://unpkg.com/@phosphor-icons/web@2.1.1"></script>
+<!-- Preact + htm in one UMD file: no build step needed (window.htmPreact) -->
+<script src="https://unpkg.com/htm@3.1.1/preact/standalone.umd.js"></script>
+</head>
+<body>
+<div id="app"><div class="gt-boot"><div><b>GreyTraining</b><span id="gt-boot-msg">Caricamento…</span></div></div></div>
+<script>
+  // If the libraries could not load (first launch without network), say so instead of a blank screen.
+  setTimeout(function () {
+    if (!window.GT_BOOTED) {
+      var m = document.getElementById('gt-boot-msg');
+      if (m) m.textContent = 'Serve una connessione al primo avvio per scaricare l’app. Riprova appena sei online.';
+    }
+  }, 8000);
+</script>
+<script src="js/data.js"></script>
+<script src="js/store.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/screens/oggi.js"></script>
+<script src="js/screens/allena.js"></script>
+<script src="js/screens/gym-views.js"></script>
+<script src="js/screens/session.js"></script>
+<script src="js/screens/nutri.js"></script>
+<script src="js/screens/prog.js"></script>
+<script src="js/screens/coach-profile.js"></script>
+<script src="js/app.js"></script>
+<script>
+  // Offline support needs http(s); file:// previews simply skip it.
+  if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+  }
+</script>
+</body>
+</html>
