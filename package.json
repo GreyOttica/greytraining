@@ -1,0 +1,12 @@
+{
+  "name": "greytraining",
+  "private": true,
+  "description": "GreyTraining personal coach PWA: static app plus Vercel functions in api/",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.136.0"
+  }
+}

@@ -92,6 +92,56 @@
     return { c, name, ring: a ? 'var(--c-fg)' : 'transparent', icon: a ? 'ph-bold ph-check' : '', on: L > 140 ? '#000' : '#FFFBF9', go: () => GT.set({ [key]: c }) };
   });
 
+  // ---------- Account and sync card (not in the prototype; built from its card patterns) ----------
+  const AI_NAME = { groq: 'Groq', gemini: 'Gemini', anthropic: 'Claude' };
+  const hhmm = t => { const x = new Date(t); return String(x.getHours()).padStart(2, '0') + ':' + String(x.getMinutes()).padStart(2, '0'); };
+  const fieldStyle = 'height:48px;border-radius:12px;border:0;outline:0;background:var(--c-s2);padding:0 14px;font-size:1rem;width:100%';
+  const secBtn = 'height:48px;border-radius:10px;font-weight:800;font-size:.875rem;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--c-s2)';
+
+  function accountCard(st) {
+    const c = st.cloud || {}, cloud = GT.cloud;
+    if (!c.configured) {
+      return html`<div style="border:1px dashed var(--c-s3);border-radius:12px;padding:14px 16px;display:flex;gap:12px;align-items:flex-start">
+        <i class="ph-light ph-cloud-slash" style="font-size:22px;color:var(--c-fg3);flex:none"></i>
+        <div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-weight:800">Sincronizzazione</span>${ui.soon('Non attiva')}</div>
+        <div style="font-size:.8125rem;color:var(--c-fg3);line-height:1.45;margin-top:4px">I dati restano su questo telefono. Login, backup e coach AI si attivano nella versione pubblicata su Vercel.</div></div>
+      </div>`;
+    }
+    if (!c.ready) {
+      return html`<div style=${S.card + ';height:72px;animation:gtShimmer 1.4s ease infinite'} aria-label="Caricamento account"></div>`;
+    }
+    const err = c.error ? html`<div role="alert" style="font-size:.8125rem;line-height:1.4;color:var(--c-acc-t);font-weight:700">${c.error}</div>` : null;
+    if (!c.user) {
+      const submit = e => { e.preventDefault(); const f = e.currentTarget; cloud.signIn(f.elements.email.value, f.elements.password.value).then(r => { if (r) f.elements.password.value = ''; }); };
+      const signUp = e => { const f = e.currentTarget.form; if (!f.reportValidity()) return; cloud.signUp(f.elements.email.value, f.elements.password.value); };
+      return html`<form onSubmit=${submit} style=${S.card + ';padding:16px;display:flex;flex-direction:column;gap:10px'}>
+        <div style="display:flex;gap:12px;align-items:center"><span style="width:44px;height:44px;border-radius:10px;background:var(--c-s2);display:grid;place-items:center;flex:none"><i class="ph-light ph-cloud-arrow-up" style="font-size:24px"></i></span>
+          <div><div style="font-weight:900;font-size:1.0625rem">Accedi per sincronizzare</div><div style="font-size:.8125rem;color:var(--c-fg3)">Backup dei dati e coach AI</div></div></div>
+        <input name="email" type="email" autocomplete="email" inputmode="email" required placeholder="Email" aria-label="Email" style=${fieldStyle} />
+        <input name="password" type="password" autocomplete="current-password" required minlength="8" placeholder="Password" aria-label="Password" style=${fieldStyle} />
+        ${err}
+        <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:8px">
+          <button type="submit" class="press" disabled=${c.busy} style=${'height:48px;border-radius:10px;background:var(--c-acc);color:var(--c-on-acc);font-weight:900;font-size:.875rem;opacity:' + (c.busy ? .6 : 1)}>${c.busy ? 'Attendi…' : 'Accedi'}</button>
+          <button type="button" onClick=${signUp} disabled=${c.busy} style=${secBtn}>Crea account</button>
+        </div>
+        <div style="font-size:.75rem;color:var(--c-fg3);line-height:1.45">Senza accesso l’app funziona lo stesso: i dati restano solo su questo telefono.</div>
+      </form>`;
+    }
+    const status = !st.online ? 'Offline · sincronizzo al ritorno della rete'
+      : c.syncing ? 'Sincronizzazione…'
+      : c.lastSync ? `Sincronizzato alle ${hhmm(c.lastSync)}` : 'In attesa della prima sincronizzazione';
+    return html`<div style=${S.card + ';padding:16px;display:flex;flex-direction:column;gap:12px'}>
+      <div style="display:flex;gap:12px;align-items:center"><span style="width:44px;height:44px;border-radius:10px;background:var(--c-s2);display:grid;place-items:center;flex:none"><i class=${c.syncing ? 'ph-light ph-arrows-clockwise' : 'ph-light ph-cloud-check'} style="font-size:24px"></i></span>
+        <div style="min-width:0"><div style="font-weight:900;font-size:1.0625rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.user}</div><div style="font-size:.8125rem;color:var(--c-fg3)">${status}</div></div></div>
+      ${err}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <button onClick=${() => cloud.syncNow()} disabled=${c.syncing || !st.online} style=${secBtn}><i class="ph-light ph-arrows-clockwise" style="font-size:18px"></i>Sincronizza</button>
+        <button onClick=${() => cloud.signOut()} disabled=${c.busy || !st.online} style=${secBtn}><i class="ph-light ph-sign-out" style="font-size:18px"></i>Esci</button>
+      </div>
+      <div style="font-size:.75rem;color:var(--c-fg3);line-height:1.45">${c.coach ? `Coach AI attivo · ${AI_NAME[c.ai] || 'Groq'}${c.aiFallback ? ` (riserva ${AI_NAME[c.aiFallback]})` : ''}.` : 'Coach AI non configurato: risposte offline.'} Uscendo, i dati restano su questo telefono.</div>
+    </div>`;
+  }
+
   GT.screens.profile = function (st, d) {
     const goals = ui.chip(GOALS, st.goal, x => GT.set({ goal: x }));
     const eqKeys = Object.keys(st.equip);
@@ -121,6 +171,8 @@
     return html`<div class="scroll" style="position:absolute;inset:0;z-index:20;background:var(--c-bg);overflow-y:auto;padding:var(--top) 16px calc(var(--pb) + 14px);display:flex;flex-direction:column;gap:14px">
       ${ui.back('Oggi', closeOverlay)}
       <div style="display:flex;gap:14px;align-items:center"><span style="width:64px;height:64px;border-radius:50%;background:var(--c-s2);display:grid;place-items:center;font-weight:900;font-size:1.25rem">GT</span><div><h1 style="margin:0;font-size:1.75rem;font-weight:900;letter-spacing:-.02em">Profilo</h1><div style="font-size:.875rem;color:var(--c-fg3);font-variant-numeric:tabular-nums">34 anni · 180 cm · 78,4 kg</div></div></div>
+      <div style="font-size:.6875rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--c-fg3);margin-top:6px">Account e sincronizzazione</div>
+      ${accountCard(st)}
       <div style="font-size:.6875rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--c-fg3);margin-top:6px">Obiettivo</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${goals.map(g => html`<button key=${g.label} onClick=${g.go} aria-pressed=${g.active} style=${`height:52px;border-radius:12px;font-weight:800;background:${g.bg};color:${g.fg};border:1px solid var(--c-s3)`}>${g.label}</button>`)}</div>
       <div style="font-size:.6875rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--c-fg3);margin-top:6px">Infortuni e limitazioni</div>

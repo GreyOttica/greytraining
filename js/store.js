@@ -80,8 +80,47 @@
   }
   function scheduleSave() { if (!saveTimer) saveTimer = setTimeout(save, 250); }
   GT.saveNow = save;
-  // Clear saved data and restart from the seed (no save on the way out)
-  GT.resetAll = function () { resetting = true; try { localStorage.removeItem(STORAGE_KEY); } catch (e) {} location.reload(); };
+  // Clear saved data on this device and restart from the seed (no save on the way out).
+  // The sync bookkeeping goes too, so a signed-in device takes the cloud copy back instead of
+  // pushing the seed over it.
+  GT.resetAll = function () {
+    resetting = true;
+    if (GT.cloud && GT.cloud.halt) GT.cloud.halt(); // no sync write may land after this
+    try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('greytraining.sync'); } catch (e) {}
+    location.reload();
+  };
+
+  // ---------- Cloud sync hooks (used by js/cloud.js) ----------
+  var PERSIST_SET = {};
+  PERSIST.forEach(function (k) { PERSIST_SET[k] = true; });
+  var applyingRemote = false;
+  GT.onPersistChange = null; // set by cloud.js: called when a persisted field changes locally
+  // Everything that is synced, as one plain object
+  GT.persistedSnapshot = function () {
+    var out = {};
+    PERSIST.forEach(function (k) { out[k] = GT.state[k]; });
+    return JSON.parse(JSON.stringify(out));
+  };
+  // Replace the persisted fields with a copy that came from the cloud.
+  // A workout running on this device is kept (unless the cloud says it was already saved).
+  // Returns true when local data was kept, so the caller can push it back up.
+  GT.applyRemote = function (data) {
+    if (!data || typeof data !== 'object') return false;
+    var patch = {}, kept = false, cur = GT.state.s;
+    PERSIST.forEach(function (k) { if (data[k] !== undefined) patch[k] = data[k]; });
+    if (cur) {
+      var savedElsewhere = (patch.history || []).some(function (h) { return h && h.start === cur.start; });
+      if (!savedElsewhere && (!patch.s || patch.s.start !== cur.start)) { patch.s = cur; kept = true; }
+    }
+    if (patch.s && patch.s.rest && !patch.s.rest.end) patch.s.rest = null;
+    // A session or summary that no longer exists must not stay open
+    if (!patch.s && GT.state.overlay === 'session') patch.overlay = null;
+    if (!patch.summary && GT.state.overlay === 'summary') patch.overlay = null;
+    applyingRemote = true;
+    try { GT.set(patch); } finally { applyingRemote = false; }
+    save();
+    return kept;
+  };
 
   GT.state = load();
   var renderQueued = false;
@@ -97,6 +136,9 @@
     GT.state = Object.assign({}, GT.state, p);
     GT.render();
     scheduleSave();
+    if (!applyingRemote && GT.onPersistChange) {
+      for (var k in p) { if (PERSIST_SET[k]) { GT.onPersistChange(); break; } }
+    }
   };
   document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') save(); });
   window.addEventListener('pagehide', save);
@@ -303,7 +345,7 @@
   };
   A.saveSession = function () {
     var st = GT.state, sm = st.summary;
-    var rec = { date: new Date().toISOString(), day: 'Upper A', rate: st.rate, summary: sm, logs: st.s ? st.s.logs : {}, notes: st.s ? st.s.notes : {} };
+    var rec = { date: new Date().toISOString(), start: st.s ? st.s.start : null, day: 'Upper A', rate: st.rate, summary: sm, logs: st.s ? st.s.logs : {}, notes: st.s ? st.s.notes : {} };
     GT.set({ workoutDone: true, doneLine: sm.dur + ' min · ' + GT.fk(sm.vol) + ' kg', s: null, summary: null, overlay: null, tab: 'oggi', history: (st.history || []).concat([rec]) });
     A.toast('info', 'Sessione salvata', 'Analisi aggiornata nella tab Coach');
   };
@@ -358,18 +400,62 @@
     A.toast('set', 'Peso registrato', '78,3 kg · media 7 gg 78,4 kg');
   };
 
-  // Coach chat — canned keyword replies, as in the prototype (production: LLM with context)
-  A.sendChat = function (txt) {
-    var t = (typeof txt === 'string' ? txt : GT.state.chatInput).trim();
-    if (!t) return;
-    GT.set(function (st) { return { chat: st.chat.concat([{ who: 'u', t: t }]), chatInput: '', typing: true }; });
+  // Offline coach: the prototype's keyword replies. Used when the real coach is not reachable.
+  function cannedReply(t) {
     var tot = GT.totals(GT.state), pLeft = Math.max(0, GT.TARGET.p - tot.p), low = t.toLowerCase();
-    var reply = /scaric|deload/.test(low) ? 'Scarico in settimana 5: stessi esercizi, circa 40% di serie in meno, RPE 6. Serve a smaltire la fatica accumulata in 4 settimane di accumulo. Se in settimana 4 la readiness resta sotto 55 per 3 giorni, lo anticipo.'
+    return /scaric|deload/.test(low) ? 'Scarico in settimana 5: stessi esercizi, circa 40% di serie in meno, RPE 6. Serve a smaltire la fatica accumulata in 4 settimane di accumulo. Se in settimana 4 la readiness resta sotto 55 per 3 giorni, lo anticipo.'
       : /protein|mangi|cena|dieta|pasto/.test(low) ? 'Ti mancano ' + pLeft + ' g di proteine. Cena: 200 g di salmone + 150 g di yogurt greco ≈ 60 g di proteine, 520 kcal. Carboidrati liberi nei ' + GT.fk(Math.max(0, GT.TARGET.k - tot.k - 520)) + ' kcal restanti.'
       : /spalla|dolor|fastidio|male/.test(low) ? 'Limitazione spalla sinistra attiva: niente dip, military sotto RPE 8. Oggi sostituisco la military con alzate laterali ai cavi 3 × 12–15. Se il fastidio dura più di una settimana, fatti valutare da un fisioterapista.'
       : "Ultime 3 settimane: volume petto +12%, dorso +9%, peso −0,3 kg/sett. Progressione in linea con l'obiettivo. Mantieni i carichi suggeriti e chiudi ogni serie a RPE 8.";
+  }
+
+  // What the real coach gets to see: plan, today's state, recent history, nutrition, profile.
+  GT.coachContext = function (st) {
+    var tot = GT.totals(st), d = GT.derive(st);
+    var logsOf = function (s) {
+      if (!s || !s.logs) return null;
+      var out = {};
+      GT.EX.forEach(function (ex) { if (s.logs[ex.id] && s.logs[ex.id].length) out[ex.name] = s.logs[ex.id].map(function (l) { return { kg: l.w, rip: l.r, rpe: l.e, pr: !!l.pr }; }); });
+      return out;
+    };
+    return {
+      oggi: new Date().toISOString().slice(0, 10),
+      nota: 'Programma, settimana e storico precedente al 10 novembre sono dati di esempio dell\'app.',
+      profilo: { eta: 34, altezza_cm: 180, peso_media_7gg_kg: 78.4, obiettivo: st.goal, limitazioni: ['Spalla sinistra: evita dip e military sopra RPE 8'],
+        attrezzatura: Object.keys(st.equip).filter(function (k) { return st.equip[k]; }), scala_sforzo: st.effort },
+      readiness: { punteggio: d.score, sonno: st.ready.sonno, energia: st.ready.energia, indolenzimento: st.ready.dolori, scala: '1-5, 5 = meglio' },
+      mesociclo: 'Upper / Lower 4 giorni, settimana 3 di 5 (RPE 7, 7.5, 8, 8.5, scarico)',
+      allenamento_oggi: { nome: 'Upper A', completato: !!st.workoutDone, riepilogo: st.doneLine || null,
+        esercizi: GT.EX.map(function (ex) { return { nome: ex.name, muscolo: ex.muscle, serie: ex.sets, rip: ex.reps, rpe_target: ex.eff, recupero_s: ex.rest, ultima_volta: ex.last.map(function (l) { return l[0] + 'x' + l[1] + ' @' + l[2]; }), suggerito: ex.sug[0] + ' kg x ' + ex.sug[1] }; }) },
+      sessione_in_corso: st.s ? { esercizio_attuale: GT.EX[st.s.exIdx].name, serie_registrate: logsOf(st.s) } : null,
+      sessioni_salvate: (st.history || []).slice(-5).map(function (h) { return { data: h.date, giorno: h.day, durata_min: h.summary && h.summary.dur, volume_kg: h.summary && h.summary.vol, record: h.summary && h.summary.prs, fatica_1_5: h.rate, serie: logsOf(h) }; }),
+      cardio_registrato: st.cardioDone,
+      nutrizione_oggi: { obiettivo: GT.TARGET, assunti: tot, acqua_l: st.water * 0.25,
+        pasti: GT.MEALS.map(function (m) { return { pasto: m, voci: (st.food[m] || []).map(function (f) { return f.n + ' ' + f.q + ' (' + f.k + ' kcal, P' + f.p + ' C' + f.c + ' G' + f.g + ')'; }) }; }) },
+      azioni_coach: st.coach
+    };
+  };
+
+  function pushCoach(text) {
     clearTimeout(chatTimer);
-    chatTimer = setTimeout(function () { GT.set(function (st) { return { chat: st.chat.concat([{ who: 'c', t: reply }]), typing: false }; }); }, 1300);
+    GT.set(function (st) { return { chat: st.chat.concat([{ who: 'c', t: text }]), typing: false }; });
+  }
+
+  // Coach chat: the real coach (AI via the Vercel function) when signed in and online,
+  // otherwise the prototype's offline replies.
+  A.sendChat = function (txt) {
+    var t = (typeof txt === 'string' ? txt : GT.state.chatInput).trim();
+    if (!t || GT.state.typing) return;
+    GT.set(function (st) { return { chat: st.chat.concat([{ who: 'u', t: t }]), chatInput: '', typing: true }; });
+    var cloud = GT.cloud;
+    if (cloud && cloud.coachReady && cloud.coachReady()) {
+      cloud.askCoach(GT.state.chat, GT.coachContext(GT.state)).then(pushCoach, function (err) {
+        pushCoach((err && err.userMessage ? err.userMessage : 'Coach non raggiungibile.') + ' Risposta offline: ' + cannedReply(t));
+      });
+      return;
+    }
+    clearTimeout(chatTimer);
+    chatTimer = setTimeout(function () { pushCoach(cannedReply(t)); }, 1300);
   };
   A.coachAction = function (id, verdict, a) {
     var coach = Object.assign({}, GT.state.coach); coach[id] = verdict;

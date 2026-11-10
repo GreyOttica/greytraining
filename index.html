@@ -22,6 +22,8 @@
 <script src="https://unpkg.com/@phosphor-icons/web@2.1.1"></script>
 <!-- Preact + htm in one UMD file: no build step needed (window.htmPreact) -->
 <script src="https://unpkg.com/htm@3.1.1/preact/standalone.umd.js"></script>
+<!-- Supabase client (login + sync), window.supabase. Optional: the app works without it. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 </head>
 <body>
 <div id="app"><div class="gt-boot"><div><b>GreyTraining</b><span id="gt-boot-msg">Caricamento…</span></div></div></div>
@@ -36,6 +38,7 @@
 </script>
 <script src="js/data.js"></script>
 <script src="js/store.js"></script>
+<script src="js/cloud.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/screens/oggi.js"></script>
 <script src="js/screens/allena.js"></script>
