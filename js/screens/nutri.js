@@ -70,14 +70,43 @@
   });
   const goToday = () => GT.set({ nutriDate: null, foodOpen: null });
 
-  // ---------- camera barcode reader (BarcodeDetector + getUserMedia) ----------
+  // ---------- camera barcode reader ----------
+  // Two engines: the browser's own BarcodeDetector where it exists (Chrome on Android), otherwise
+  // ZXing (open source, loaded from jsDelivr only when the camera opens) — this is the path on
+  // iPhone, whose Safari has no BarcodeDetector.
   // Screens are plain functions, so the camera lives in this module and follows the <video>
   // element through a stable ref callback: mounted -> start, unmounted -> stop.
-  const cam = { el: null, stream: null, timer: null, det: null, busy: false, status: 'idle', req: 0 };
-  function camSupported() { return 'BarcodeDetector' in window && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia); }
+  const ZXING_URL = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+  const cam = { el: null, stream: null, timer: null, det: null, reader: null, busy: false, status: 'idle', req: 0 };
+  const hasMedia = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  const hasNative = () => 'BarcodeDetector' in window;
+  function camSupported() { return hasMedia(); }
+  let zxingLoad = null;
+  function loadZXing() {
+    if (window.ZXing && window.ZXing.BrowserMultiFormatReader) return Promise.resolve(window.ZXing);
+    if (!zxingLoad) {
+      zxingLoad = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = ZXING_URL; s.async = true;
+        s.onload = () => (window.ZXing ? resolve(window.ZXing) : reject(new Error('zxing')));
+        s.onerror = () => { zxingLoad = null; reject(new Error('zxing')); };
+        document.head.appendChild(s);
+      });
+    }
+    return zxingLoad;
+  }
+  // A barcode was read: stop the camera and look the product up
+  function onCode(raw) {
+    const hit = String(raw || '').replace(/\D/g, '');
+    if (hit.length < 8 || cam.status === 'found') return;
+    stopCam(); camStatus('found');
+    try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) {}
+    A.lookupBarcode(hit);
+  }
   function stopCam() {
     cam.req++;
     clearInterval(cam.timer); cam.timer = null; cam.busy = false;
+    if (cam.reader) { try { cam.reader.reset(); } catch (e) {} cam.reader = null; }
     if (cam.stream) cam.stream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
     cam.stream = null;
     if (cam.el) { try { cam.el.srcObject = null; } catch (e) {} }
@@ -90,17 +119,38 @@
     cam.det.detect(v).then(codes => {
       cam.busy = false;
       const hit = (codes || []).map(c => String(c.rawValue || '').replace(/\D/g, '')).filter(c => c.length >= 8)[0];
-      if (hit && cam.stream) {
-        stopCam(); camStatus('found');
-        try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) {}
-        A.lookupBarcode(hit);
-      }
+      if (hit && cam.stream) onCode(hit);
     }).catch(() => { cam.busy = false; });
   }
+  const camError = err => camStatus(err && (err.name === 'NotAllowedError' || err.name === 'SecurityError') ? 'denied' : 'error');
+  // ZXing engine: it opens the camera on the <video> element and decodes continuously
+  function startZXing(token) {
+    loadZXing().then(Z => {
+      if (token !== cam.req || !cam.el) return;
+      const hints = new Map();
+      hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.UPC_A, Z.BarcodeFormat.UPC_E]);
+      hints.set(Z.DecodeHintType.TRY_HARDER, true);
+      const reader = new Z.BrowserMultiFormatReader(hints, 250);
+      cam.reader = reader;
+      const v = cam.el;
+      v.muted = true; v.setAttribute('playsinline', ''); v.setAttribute('muted', '');
+      return reader.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }, v, result => {
+        if (result && token === cam.req) onCode(result.getText());
+      }).then(() => {
+        if (token !== cam.req) { try { reader.reset(); } catch (e) {} return; }
+        camStatus('live');
+      });
+    }).catch(err => {
+      if (token !== cam.req) return;
+      if (err && err.message === 'zxing') { camStatus('noLib'); return; }
+      camError(err);
+    });
+  }
   function startCam() {
-    if (!cam.el || cam.stream || !camSupported()) return;
+    if (!cam.el || cam.stream || cam.reader || !camSupported()) return;
     const token = ++cam.req;
     camStatus('starting');
+    if (!hasNative()) { startZXing(token); return; }
     navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false }).then(stream => {
       if (token !== cam.req || !cam.el) { stream.getTracks().forEach(t => t.stop()); return; }
       cam.stream = stream;
@@ -116,7 +166,7 @@
       camStatus('live');
     }).catch(err => {
       if (token !== cam.req) return;
-      camStatus(err && (err.name === 'NotAllowedError' || err.name === 'SecurityError') ? 'denied' : 'error');
+      camError(err);
     });
   }
   function camRef(el) {
@@ -130,7 +180,7 @@
   }
   // iOS and Android stop the camera in the background: release it and restart on return
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') { if (cam.stream) { stopCam(); cam.status = 'idle'; } return; }
+    if (document.visibilityState === 'hidden') { if (cam.stream || cam.reader) { stopCam(); cam.status = 'idle'; } return; }
     const st = GT.state, sc = st.scan || {};
     if (cam.el && st.nutriView === 'scanner' && st.scanMode === 'camera' && !sc.loading && !sc.error) startCam();
   });
@@ -459,9 +509,10 @@
     const camMsg = {
       starting: 'Avvio fotocamera…',
       denied: 'Accesso alla fotocamera negato. Consentilo nelle impostazioni del browser oppure inserisci il codice a mano.',
-      error: 'Fotocamera non disponibile. Inserisci il codice a mano.'
+      error: 'Fotocamera non disponibile. Inserisci il codice a mano.',
+      noLib: 'Il lettore di codici non si è scaricato: la prima volta serve la connessione. Inserisci il codice a mano.'
     }[cam.status];
-    const camBlocked = cam.status === 'denied' || cam.status === 'error';
+    const camBlocked = cam.status === 'denied' || cam.status === 'error' || cam.status === 'noLib';
 
     const middle = isCam
       ? html`<div style="flex:1;position:relative;display:grid;place-items:center;overflow:hidden">
