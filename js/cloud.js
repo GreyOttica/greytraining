@@ -99,10 +99,16 @@
   function takeRemote(row, uid, firstLink) {
     var remoteAt = Number(row.client_updated_at) || 0, m = meta();
     if (firstLink && (m.dirty || m.localUpdatedAt > 0)) backupLocal();
-    var keptLocal = GT.applyRemote(row.data);
+    var res = GT.applyRemote(row.data);
+    if (res.ignored) {
+      // The cloud holds data from an older app version (the prototype's sample data):
+      // keep this device's data and upload it over the old copy.
+      setMeta({ linkedUser: uid, remoteSeen: remoteAt, localUpdatedAt: Math.max(Date.now(), remoteAt + 1), dirty: true });
+      return 'push';
+    }
     setMeta({ linkedUser: uid, localUpdatedAt: remoteAt, remoteSeen: remoteAt, dirty: false });
     // The live workout on this device was kept: send it back up.
-    if (keptLocal) GT.onPersistChange();
+    if (res.kept) GT.onPersistChange();
     setCloud({ lastSync: Date.now(), error: null });
   }
 

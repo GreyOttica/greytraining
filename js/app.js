@@ -40,8 +40,8 @@
   }
 
   function miniBar(st) {
-    return html`<button class="press" onClick=${GT.act.startSession} style="position:absolute;left:12px;right:12px;bottom:calc(var(--tabH) + 8px);z-index:31;height:56px;border-radius:14px;background:var(--c-acc);color:var(--c-on-acc);display:flex;align-items:center;gap:10px;padding:0 16px;font-weight:800;box-shadow:0 8px 24px rgba(0,0,0,.35)">
-      <span style="width:8px;height:8px;border-radius:50%;background:var(--c-acc)"></span>Upper A in corso<span class="num" style="margin-left:auto">${GT.elapsed(st.s)}</span><i class="ph-bold ph-caret-up" style="font-size:16px"></i>
+    return html`<button class="press" onClick=${function () { GT.act.startSession(); }} style="position:absolute;left:12px;right:12px;bottom:calc(var(--tabH) + 8px);z-index:31;height:56px;border-radius:14px;background:var(--c-acc);color:var(--c-on-acc);display:flex;align-items:center;gap:10px;padding:0 16px;font-weight:800;box-shadow:0 8px 24px rgba(0,0,0,.35)">
+      <span style="width:8px;height:8px;border-radius:50%;background:var(--c-acc)"></span>${st.s.dayName} in corso<span class="num" style="margin-left:auto">${GT.elapsed(st.s)}</span><i class="ph-bold ph-caret-up" style="font-size:16px"></i>
     </button>`;
   }
 
@@ -65,21 +65,33 @@
   function App() {
     var st = GT.state, d = GT.derive(st), ov = st.overlay;
     GT.applyColors();
+    // First launch (or "Rifai il questionario"): the onboarding questionnaire takes the whole screen
+    if (!d.onboarded || (st.ob && st.ob.edit)) {
+      return html`<div class="gt-app">
+        ${screen('onboarding', st, d)}
+        ${!st.online && !offlineHidden ? offlineBanner() : null}
+        ${st.toast ? toast(st.toast) : null}
+      </div>`;
+    }
     return html`<div class="gt-app">
       <div key="tab-layer" style="position:absolute;inset:0;z-index:0">${screen(TAB_SCREEN[st.tab] || 'oggi', st, d)}</div>
 
       ${st.allenView === 'cardio' ? screen('cardioDetail', st, d) : null}
       ${st.allenView === 'exercise' ? screen('exDetail', st, d) : null}
       ${st.allenView === 'editor' ? screen('editor', st, d) : null}
+      ${st.allenView === 'pick' ? screen('exPicker', st, d) : null}
       ${st.nutriView === 'scanner' ? screen('scanner', st, d) : null}
       ${st.nutriView === 'product' ? screen('product', st, d) : null}
+      ${st.nutriView === 'manual' ? screen('manualFood', st, d) : null}
       ${ov === 'profile' ? screen('profile', st, d) : null}
       ${ov === 'session' && st.s ? screen('session', st, d) : null}
       ${ov === 'summary' && st.summary ? screen('summary', st, d) : null}
 
       ${ov === 'readiness' ? screen('readiness', st, d) : null}
-      ${ov === 'cardioLog' && st.log ? screen('cardioLog', st, d) : null}
+      ${ov === 'cardioLog' && st.log && st.cardioId ? screen('cardioLog', st, d) : null}
       ${ov === 'quick' ? screen('quickAdd', st, d) : null}
+      ${ov === 'weight' ? screen('weightSheet', st, d) : null}
+      ${ov === 'measures' ? screen('measuresSheet', st, d) : null}
 
       ${!d.fullScreen ? tabBar(st) : null}
       ${st.s && ov !== 'session' && !d.fullScreen && !(st.tab === 'oggi' && GT.v('vOggi') === 'B') ? miniBar(st) : null}

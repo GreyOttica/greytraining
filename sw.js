@@ -2,11 +2,12 @@
    App files are precached and fetched network-first, so updates arrive on the next launch.
    Fonts, icons and libraries from the CDNs are cached on first use.
    Bump VERSION when the file list below changes. */
-var VERSION = 'gt-v3';
+var VERSION = 'gt-v4';
 var APP = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
-  './js/data.js', './js/store.js', './js/cloud.js', './js/ui.js', './js/app.js',
-  './js/screens/oggi.js', './js/screens/allena.js', './js/screens/gym-views.js', './js/screens/session.js',
+  './js/data.js', './js/catalog.js', './js/foods.js', './js/plan.js', './js/insights.js',
+  './js/store.js', './js/cloud.js', './js/ui.js', './js/app.js',
+  './js/screens/onboarding.js', './js/screens/oggi.js', './js/screens/allena.js', './js/screens/gym-views.js', './js/screens/session.js',
   './js/screens/nutri.js', './js/screens/prog.js', './js/screens/coach-profile.js',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'
 ];

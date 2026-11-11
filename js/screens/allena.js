@@ -1,294 +1,480 @@
 /* GreyTraining — Allena tab (Palestra / Corsa / Piscina), cardio session detail and cardio log sheet.
-   Port of design-reference/GreyTraining.dc.html lines 160-281 and 704-715 (template) and the
-   matching renderVals() values (weekPlan, discs, runSessions, paceZones, runLib, swimStats,
-   swimSessions, cd, logFields, logPace, logRpe, allenSegs, weeks, days, volume, lib*). */
+   Visual language from design-reference/GreyTraining.dc.html (Allena, 2a–2d of HANDOFF.md).
+   Every value comes from the user's own plan (st.plan) and logs (st.logs): no sample data. */
 (function () {
   'use strict';
   var GT = window.GT, html = GT.html, S = GT.S, ui = GT.ui, A = GT.act;
 
-  const EYEBROW_PAD = 'font-size:.6875rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--c-fg3);padding:4px 4px 0';
-  const BADGE = 'font-size:.6875rem;font-weight:700;padding:3px 8px;border-radius:999px;background:var(--c-s2);color:var(--c-fg2)';
-  const DISC_ICON = { palestra: 'barbell', corsa: 'person-simple-run', piscina: 'swimming-pool' };
+  const EYEBROW_PAD = S.eyebrow + ';padding:4px 4px 0';
+  const ICON = { gym: 'barbell', run: 'person-simple-run', swim: 'swimming-pool' };
+  const DISC_TYPE = { corsa: 'run', piscina: 'swim' };
+  const VOL_MAX = 22; // scale of the weekly volume bars (sets)
+  const LIB_GROUPS = {
+    Tutti: null, Petto: ['petto'], Dorso: ['dorso'], Spalle: ['spalle'],
+    Gambe: ['quadricipiti', 'femorali', 'glutei', 'polpacci'], Braccia: ['bicipiti', 'tricipiti'], Addome: ['addome']
+  };
 
-  const openEditor = () => GT.set({ allenView: 'editor' });
-  const openCardio = id => GT.set({ allenView: 'cardio', cardioId: id });
+  // ---------- small helpers ----------
+  const pad2 = n => String(n).padStart(2, '0');
+  // seconds -> "47:30" or "1:02:15"
+  const hms = sec => {
+    sec = Math.round(sec);
+    const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    return h ? `${h}:${pad2(m)}:${pad2(s)}` : `${m}:${pad2(s)}`;
+  };
+  const dayNum = iso => Number(String(iso).slice(8, 10));
+  const exName = id => (GT.EXI[id] || {}).n || id;
+  const sum = (a, f) => a.reduce((s, x) => s + f(x), 0);
+  const pct = v => Math.max(0, Math.min(100, v / VOL_MAX * 100)).toFixed(1) + '%';
+  const joinIt = arr => arr.length > 1 ? arr.slice(0, -1).join(', ') + ' e ' + arr[arr.length - 1] : (arr[0] || '');
 
-  // ---------- renderVals() port: Allena tab ----------
-  function weekPlan(st) {
-    return GT.WEEK.map(([d, n, k, cid], i) => {
-      const today = i === GT.TODAY_IDX, done = cid ? !!st.cardioDone[cid] : (today && st.workoutDone);
+  // This week: today, Monday, Sunday and the mesocycle week
+  function weekCtx(st, d) {
+    const today = d.today || GT.todayISO(), monday = GT.mondayOf(today);
+    return { today, monday, sunday: GT.addDays(monday, 6), cycle: d.cycle || GT.cycleWeek(st.plan, today) };
+  }
+  // Weekdays (0 = Mon) on which the plan schedules an item
+  const schedOf = (plan, type, id) => plan.week.filter(w => w.items.some(it => it.type === type && it.id === id)).map(w => w.wd);
+  // "Oggi" or "Mer 11" for a weekday of this week
+  const dayLabel = (wd, w) => { const date = GT.addDays(w.monday, wd); return date === w.today ? 'Oggi' : `${GT.DAYS_SHORT[wd]} ${dayNum(date)}`; };
+  const cardioBetween = (st, from, to, kind) => (st.logs.cardio || []).filter(l => l.date >= from && l.date <= to && (!kind || l.kind === kind));
+  const openCardio = (id, kind) => GT.set({ allenView: 'cardio', cardioId: id, disc: kind || GT.state.disc });
+
+  // ---------- shared markup ----------
+  // Empty state: what is missing, how to get it, one action
+  function emptyState(icon, title, body, action) {
+    return html`<div style=${S.card + ';padding:20px 16px;display:flex;flex-direction:column;gap:8px;align-items:flex-start'}>
+      <i class=${'ph-light ph-' + icon} style="font-size:28px;color:var(--c-fg3)"></i>
+      <div style="font-size:1.0625rem;font-weight:900;line-height:1.25;margin-top:2px">${title}</div>
+      <p style="margin:0;font-size:.875rem;line-height:1.45;color:var(--c-fg3);text-wrap:pretty">${body}</p>
+      ${action ? html`<button class="press" onClick=${action.go} style="margin-top:6px;height:48px;padding:0 18px;border-radius:12px;border:1px solid var(--c-s3);font-weight:800;display:flex;align-items:center;gap:8px"><i class=${action.icon || 'ph-light ph-arrow-right'} style="font-size:18px"></i>${action.label}</button>` : null}
+    </div>`;
+  }
+  const toQuestionnaire = { label: 'Aggiungi dal Profilo', go: () => A.editQuestionnaire(), icon: 'ph-light ph-user-circle' };
+
+  function doneBadge() {
+    return html`<span style="font-size:.75rem;font-weight:800;display:flex;gap:4px;align-items:center;color:var(--c-sec)"><i class="ph-bold ph-check" style="font-size:13px"></i>Fatto</span>`;
+  }
+  function profileBars(c, h, r) {
+    return html`<div aria-hidden="true" style=${`flex:none;display:flex;align-items:flex-end;gap:2px;height:${h}px;width:100%`}>${GT.profileOf(c).map((b, i) => html`<div key=${i} style=${`flex:${b.f};height:${b.h};background:${b.bg};border-radius:${r}px`}></div>`)}</div>`;
+  }
+  function dashedSlot(icon, title, badge, text) {
+    return html`<div style="border:1px dashed var(--c-s3);border-radius:12px;padding:14px 16px;display:flex;gap:12px;align-items:flex-start"><i class=${'ph-light ph-' + icon} style="font-size:22px;color:var(--c-fg3);flex:none"></i><div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-weight:800">${title}</span>${ui.soon(badge)}</div><div style="font-size:.8125rem;color:var(--c-fg3);line-height:1.45;margin-top:4px">${text}</div></div></div>`;
+  }
+  function statStrip(stats, size) {
+    return html`<div style="flex:none;display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--c-line);border:1px solid var(--c-line);border-radius:12px;overflow:hidden">${stats.map(s => html`<div key=${s.l} style="background:var(--c-s1);padding:12px;min-width:0"><div style="font-size:.75rem;color:var(--c-fg3)">${s.l}</div><div style=${`font-size:${size};font-weight:900;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`}>${s.v}</div></div>`)}</div>`;
+  }
+
+  // ---------- week strip ----------
+  function weekStrip(st, w) {
+    const cardio = st.logs.cardio || [];
+    return GT.weekDates(w.today).map((date, wd) => {
+      const items = GT.dayPlan(st, date).items, first = items[0], isToday = date === w.today;
+      // A rest day with an unplanned session logged still shows the check
+      const extra = !items.length && (GT.sessionsOn(st, date).length > 0 || cardio.some(l => l.date === date));
+      const done = items.length ? items.every(i => i.done) : extra;
+      const names = items.map(i => i.day ? i.day.name : i.cardio.name);
       return {
-        d, n,
-        icon: done ? 'ph-bold ph-check' : `ph-light ph-${DISC_ICON[k]}`,
-        ic: done ? 'var(--c-sec)' : 'var(--c-fg2)',
-        bg: done ? 'var(--c-s2)' : 'var(--c-s1)',
-        bd: today ? 'var(--c-acc)' : 'var(--c-line)',
-        go: () => cid ? GT.set({ disc: k, allenView: 'cardio', cardioId: cid }) : GT.set({ disc: 'palestra', allenSub: 'scheda' })
+        date, wd, isToday, done, multi: items.length > 1, someDone: items.some(i => i.done),
+        letter: GT.DAYS_LETTER[wd], n: dayNum(date),
+        icon: done ? 'ph-bold ph-check' : first ? `ph-light ph-${ICON[first.type]}` : null,
+        label: `${GT.DAYS_LONG[wd]} ${dayNum(date)}${isToday ? ', oggi' : ''}: ${names.length ? names.join(' e ') : 'riposo'}${done ? ', fatto' : ''}`,
+        go: !first ? null : first.type === 'gym'
+          ? () => GT.set({ disc: 'palestra', allenSub: 'scheda' })
+          : () => openCardio(first.id, first.type === 'run' ? 'corsa' : 'piscina')
       };
     });
   }
 
+  // ---------- discipline selector ----------
   function discs(st) {
+    const plan = st.plan;
+    const has = { palestra: true, corsa: !!plan.run, piscina: !!plan.swim };
     return [['palestra', 'Palestra', 'barbell'], ['corsa', 'Corsa', 'person-simple-run'], ['piscina', 'Piscina', 'swimming-pool']].map(([id, label, ic]) => {
-      const a = st.disc === id;
+      const a = st.disc === id, on = has[id];
       return {
-        id, label,
-        icon: `${a ? 'ph-fill' : 'ph-light'} ph-${ic}`,
-        bg: a ? 'var(--c-acc)' : 'transparent',
-        fg: a ? 'var(--c-on-acc)' : 'var(--c-fg)',
-        bd: a ? 'var(--c-acc)' : 'var(--c-s3)',
+        id, label, active: a, on,
+        icon: `${a && on ? 'ph-fill' : 'ph-light'} ph-${ic}`,
+        bg: a && on ? 'var(--c-acc)' : 'transparent',
+        fg: a && on ? 'var(--c-on-acc)' : on ? 'var(--c-fg)' : a ? 'var(--c-fg2)' : 'var(--c-fg3)',
+        bd: on ? (a ? '1px solid var(--c-acc)' : '1px solid var(--c-s3)') : (a ? '1px dashed var(--c-acc)' : '1px dashed var(--c-s3)'),
+        aria: on ? label : `${label}, non nel piano`,
         go: () => GT.set({ disc: id })
       };
     });
   }
 
-  const WEEKS = [['S1', 'RPE 7'], ['S2', 'RPE 7,5'], ['S3', 'RPE 8'], ['S4', 'RPE 8,5'], ['S5', 'Scarico']].map(([w, t], i) => ({
-    w, t,
-    bg: i === 2 ? 'var(--c-acc)' : i < 2 ? 'var(--c-s3)' : 'transparent',
-    fg: i === 2 ? 'var(--c-on-acc)' : i < 2 ? 'var(--c-fg)' : 'var(--c-fg2)',
-    bs: i === 4 ? 'dashed' : 'solid',
-    bc: i > 2 ? 'var(--c-s3)' : 'transparent'
-  }));
+  // ---------- Palestra · Scheda ----------
+  function nextGym(st, w) {
+    for (let i = 1; i <= 7; i++) {
+      const date = GT.addDays(w.today, i), g = GT.dayPlan(st, date).items.filter(x => x.type === 'gym')[0];
+      if (g) return { date, day: g.day };
+    }
+    return null;
+  }
 
-  const DAYS = [['Upper A', 'Mar · oggi', 'Panca, rematore, military, trazioni +2', true], ['Lower A', 'Mer', 'Squat, stacco rumeno, affondi, polpacci +1'], ['Upper B', 'Ven', 'Panca inclinata, lat machine, alzate +3'], ['Lower B', 'Sab', 'Stacco, leg press, leg curl +2']]
-    .map(([n, d, ex, t]) => ({ n, d, ex, dc: t ? 'var(--c-acc-t)' : 'var(--c-fg3)' }));
-
-  const VOLUME = [['Petto', 12, 10, 20], ['Dorso', 14, 10, 20], ['Spalle', 10, 8, 18], ['Quadricipiti', 9, 8, 16], ['Femorali', 6, 8, 16], ['Glutei', 8, 6, 16], ['Bicipiti', 8, 6, 14], ['Tricipiti', 9, 6, 14], ['Polpacci', 4, 6, 12]]
-    .map(([name, sets, mev, mrv]) => {
-      const M = 22, low = sets < mev, hi = sets > mrv;
+  function scheda(st, d, w) {
+    const plan = st.plan, cw = w.cycle;
+    if (!plan.days.length) {
+      return emptyState('barbell', 'Nessun giorno di palestra nel piano',
+        'Nel questionario hai indicato 0 giorni di palestra. Aggiungili per avere una scheda con esercizi, serie e progressione dei carichi.', toQuestionnaire);
+    }
+    const left = plan.deloadIndex - cw.index;
+    const sub = `${cw.cycle > 1 ? `Ciclo ${cw.cycle} · ` : ''}Inizio ${GT.fmtDay(plan.startDate)} · ${cw.deload ? 'questa settimana è di scarico'
+      : left === 1 ? 'scarico la prossima settimana' : `scarico tra ${left} settimane`}`;
+    const tiles = plan.rpeWeeks.map((rpe, i) => {
+      const cur = i === cw.index, past = i < cw.index, dl = i === plan.deloadIndex;
       return {
-        name, sets, range: `${mev}–${mrv}`,
-        bandL: (mev / M * 100) + '%', bandW: ((mrv - mev) / M * 100) + '%', fill: (sets / M * 100) + '%', fc: 'var(--c-acc)',
-        status: low ? `Sotto il minimo · +${mev - sets} serie` : hi ? 'Oltre il recuperabile' : 'Nel range',
+        w: 'S' + (i + 1), t: dl ? 'Scarico' : GT.effLabel(rpe),
+        bg: cur ? 'var(--c-acc)' : past ? 'var(--c-s3)' : 'transparent',
+        fg: cur ? 'var(--c-on-acc)' : past ? 'var(--c-fg)' : 'var(--c-fg2)',
+        bd: `1px ${dl ? 'dashed' : 'solid'} ${cur ? 'var(--c-acc)' : past ? 'transparent' : 'var(--c-s3)'}`,
+        aria: `Settimana ${i + 1}${cur ? ', attuale' : ''}: ${dl ? 'scarico' : GT.effLabel(rpe)}`
+      };
+    });
+    const todayWd = GT.weekday(w.today);
+    const todayGym = d.todayPlan.items.filter(x => x.type === 'gym');
+    const days = plan.days.map(day => {
+      const wds = schedOf(plan, 'gym', day.id), isToday = wds.indexOf(todayWd) >= 0;
+      const doneToday = isToday && todayGym.some(x => x.id === day.id && x.done);
+      const names = day.ex.slice(0, 3).map(x => exName(x.id));
+      const more = day.ex.length - names.length;
+      return {
+        id: day.id, n: day.name,
+        when: wds.length ? wds.map(wd => GT.DAYS_SHORT[wd]).join(' · ') + (isToday ? ' · oggi' : '') : 'non in calendario',
+        dc: isToday && !doneToday ? 'var(--c-acc-t)' : 'var(--c-fg3)', doneToday,
+        ex: day.ex.length ? names.join(', ') + (more > 0 ? ` +${more}` : '') : 'Nessun esercizio: tocca per aggiungerne',
+        go: () => GT.set({ allenView: 'editor', editDay: day.id })
+      };
+    });
+    const pending = todayGym.filter(x => !x.done)[0], doneRec = (todayGym.filter(x => x.done)[0] || {}).done;
+    const nx = !todayGym.length ? nextGym(st, w) : null;
+
+    return html`
+      <div style=${S.card + ';padding:16px;display:flex;flex-direction:column;gap:14px'}>
+        <div><div style="font-size:1.125rem;font-weight:900">${plan.split}</div><div style="font-size:.8125rem;color:var(--c-fg3);margin-top:2px">${sub}</div></div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">
+          ${tiles.map(t => html`<div key=${t.w} aria-label=${t.aria} style=${`height:58px;border-radius:8px;padding:8px 6px;display:flex;flex-direction:column;justify-content:space-between;background:${t.bg};color:${t.fg};border:${t.bd};min-width:0`}><span style="font-size:.8125rem;font-weight:900">${t.w}</span><span style="font-size:.625rem;font-weight:700;letter-spacing:-.01em;white-space:nowrap">${t.t}</span></div>`)}
+        </div>
+      </div>
+      <div style=${S.card + ';display:flex;flex-direction:column;overflow:hidden'}>
+        ${days.map((x, i) => html`
+          <button key=${x.id} class="hov-s1" onClick=${x.go} aria-label=${`Modifica ${x.n}`} style=${`display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:14px 16px;${i < days.length - 1 ? 'border-bottom:1px solid var(--c-line);' : ''}text-align:left;min-height:64px`}>
+            <div style="min-width:0"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-size:1rem;font-weight:800">${x.n}</span><span style=${`font-size:.75rem;font-weight:700;color:${x.dc}`}>${x.when}</span>${x.doneToday ? html`<i class="ph-bold ph-check" aria-label="fatto" style="font-size:13px;color:var(--c-sec)"></i>` : null}</div><div style="font-size:.8125rem;color:var(--c-fg3);margin-top:3px">${x.ex}</div></div>
+            <i class="ph-light ph-pencil-simple" style="font-size:20px;color:var(--c-fg3)"></i>
+          </button>`)}
+      </div>
+      ${st.s ? ui.cta(`Riprendi ${st.s.dayName}`, () => A.startSession(), { icon: 'ph-fill ph-play' })
+        : pending ? ui.cta(`Inizia ${pending.day.name}`, () => A.startSession(pending.id), { icon: 'ph-fill ph-play' })
+        : doneRec ? html`<div style="height:52px;border-radius:12px;background:var(--c-s2);display:flex;align-items:center;justify-content:center;gap:8px;font-weight:800;font-variant-numeric:tabular-nums"><i class="ph-bold ph-check" style="font-size:16px;color:var(--c-sec)"></i>Completato · ${doneRec.dur} min · ${doneRec.vol > 0 ? `${GT.fk(doneRec.vol)} kg` : `${Object.keys(doneRec.sets || {}).reduce((a, k) => a + (doneRec.sets[k] || []).length, 0)} serie`}</div>`
+        : nx ? html`<p style="margin:0;padding:0 4px;font-size:.8125rem;line-height:1.5;color:var(--c-fg3)">Oggi niente palestra. Prossima: ${GT.fmtShort(nx.date)} · ${nx.day.name}.</p>` : null}
+    `;
+  }
+
+  // ---------- Palestra · Volume ----------
+  function volume(st, d, w) {
+    const plan = st.plan;
+    const sessions = (st.logs.sessions || []).filter(s => s.date >= w.monday && s.date <= w.sunday);
+    const hasLog = sessions.length > 0;
+    if (!plan.days.length && !hasLog) {
+      return emptyState('stack', 'Nessuna serie da contare',
+        'Il volume per muscolo nasce dalle sessioni di palestra. Aggiungi almeno un giorno di palestra al piano.', toQuestionnaire);
+    }
+    const done = GT.weeklySets(st, w.monday), planned = GT.plannedSets(plan);
+    const effTxt = st.effort === 'RIR' ? 'RIR ≤ 3' : 'RPE ≥ 7';
+    const rows = GT.MUSCLES.map(m => {
+      const p = planned[m.k] || 0, v = hasLog ? (done[m.k] || 0) : p;
+      const low = v < m.mev, hi = v > m.mrv;
+      const status = low ? `Sotto il minimo · +${Math.ceil(m.mev - v)} serie` : hi ? 'Oltre il recuperabile' : 'Nel range';
+      return {
+        k: m.k, name: m.n, v, p, range: `${m.mev}–${m.mrv}`,
+        bandL: pct(m.mev), bandW: pct(m.mrv - m.mev), fill: pct(v), mark: pct(p),
+        status: hasLog ? status : `Piano · ${status.charAt(0).toLowerCase() + status.slice(1)}`,
         sc: low ? 'var(--c-acc-t)' : 'var(--c-fg3)'
       };
     });
-
-  const PACE_ZONES = [['Z1', 'Recupero', 'oltre 6:15'], ['Z2', 'Fondo', '5:35–6:15'], ['Z3', 'Medio', '5:00–5:35'], ['Z4', 'Soglia', '4:35–5:00'], ['Z5', 'VO2max', 'sotto 4:35']]
-    .map(([z, n, p]) => ({ z, n, p: p + ' /km' }));
-
-  const SWIM_STATS = [{ l: 'Questo mese', v: '4.500 m' }, { l: 'Sedute', v: '3' }, { l: 'RPE medio', v: '3' }];
-
-  function runSessions(st) {
-    return ['rip', 'lungo'].map(id => {
-      const c = GT.CARDIO[id];
-      return Object.assign({}, c, {
-        id, dist: `${GT.fmt(c.km)} km`, dur: `~${c.min} min`, profile: GT.profileOf(c), done: !!st.cardioDone[id],
-        dc: c.tag === 'Qualità' ? 'var(--c-acc-t)' : 'var(--c-fg3)', open: () => openCardio(id)
-      });
-    });
-  }
-
-  function runLib() {
-    return ['facile', 'prog', 'soglia', 'fartlek'].map(id => ({ id, n: GT.CARDIO[id].name, d: `${GT.CARDIO[id].tag} · ~${GT.CARDIO[id].min} min`, open: () => openCardio(id) }));
-  }
-
-  function swimSessions(st) {
-    return ['nuoto1', 'nuoto2', 'nuoto3'].map(id => {
-      const c = GT.CARDIO[id];
-      return Object.assign({}, c, { id, dist: `${GT.fk(c.m)} m`, dur: `~${c.min} min`, done: !!st.cardioDone[id], dc: 'var(--c-fg3)', open: () => openCardio(id) });
-    });
-  }
-
-  function libList(st) {
-    const q = st.libQuery.trim().toLowerCase();
-    return GT.LIB.filter(x => (st.libMuscle === 'Tutti' || x.m === st.libMuscle) && (!q || x.n.toLowerCase().includes(q) || x.m.toLowerCase().includes(q)))
-      .map(x => Object.assign({}, x, { open: () => GT.set({ allenView: 'exercise', exDetail: x.id, exBack: null }) }));
-  }
-
-  // ---------- Shared markup ----------
-  function doneBadge() {
-    return html`<span style="font-size:.75rem;font-weight:800;display:flex;gap:4px;align-items:center"><i class="ph-bold ph-check" style="font-size:13px"></i>Fatto</span>`;
-  }
-
-  function startButton(d) {
-    return html`<button onClick=${A.startSession} style="height:60px;border-radius:12px;background:var(--c-acc);color:var(--c-on-acc);font-size:1.0625rem;font-weight:900;display:flex;align-items:center;justify-content:center;gap:10px"><i class="ph-fill ph-play" style="font-size:20px"></i>${d.startLabel}</button>`;
-  }
-
-  // ---------- Palestra ----------
-  function palestra(st, d) {
-    const isScheda = st.allenSub === 'scheda', isVolume = st.allenSub === 'volume', isLib = st.allenSub === 'libreria';
-    const allenSegs = ui.seg([['scheda', 'Scheda'], ['volume', 'Volume'], ['libreria', 'Libreria']], st.allenSub, x => GT.set({ allenSub: x }));
-    const list = isLib ? libList(st) : [];
-    const libChips = ui.chip(['Tutti', 'Petto', 'Dorso', 'Spalle', 'Gambe', 'Braccia'], st.libMuscle, x => GT.set({ libMuscle: x }));
+    const under = GT.MUSCLES.filter(m => m.mev > 0 && (planned[m.k] || 0) < m.mev).map(m => m.n.toLowerCase());
+    const note = 'Range efficace: tra il volume minimo per progredire e il massimo recuperabile. La tacca indica le serie che il piano prevede in una settimana normale.'
+      + (w.cycle.deload ? ' Questa è la settimana di scarico: circa 40% di serie in meno, stare sotto il minimo è previsto.' : '')
+      + (under.length ? ` Nel piano sono sotto il minimo: ${joinIt(under)}. Aggiungi serie o esercizi dalla Scheda; il Coach propone le serie mancanti per i muscoli già allenati.` : '');
+    const todayGym = d.todayPlan.items.filter(x => x.type === 'gym' && !x.done)[0];
 
     return html`
-      ${ui.Seg(allenSegs)}
-      ${isScheda ? html`
-        <div style="background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:14px">
-          <div style="display:flex;justify-content:space-between;align-items:baseline"><div><div style="font-size:1.125rem;font-weight:900">Upper / Lower · 4 giorni</div><div style="font-size:.8125rem;color:var(--c-fg3);margin-top:2px">Inizio 20 ott · scarico tra 2 settimane</div></div></div>
-          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">
-            ${WEEKS.map(w => html`<div key=${w.w} style=${`height:58px;border-radius:8px;padding:8px;display:flex;flex-direction:column;justify-content:space-between;background:${w.bg};color:${w.fg};border:1px ${w.bs} ${w.bc}`}><span style="font-size:.8125rem;font-weight:900">${w.w}</span><span style="font-size:.6875rem;font-weight:700">${w.t}</span></div>`)}
-          </div>
-        </div>
-        <div style="display:flex;flex-direction:column;background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px">
-          ${DAYS.map(x => html`
-            <button key=${x.n} onClick=${openEditor} style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--c-line);text-align:left;min-height:64px">
-              <div><div style="display:flex;gap:8px;align-items:center"><span style="font-size:1rem;font-weight:800">${x.n}</span><span style=${`font-size:.75rem;font-weight:700;color:${x.dc}`}>${x.d}</span></div><div style="font-size:.8125rem;color:var(--c-fg3);margin-top:3px">${x.ex}</div></div>
-              <i class="ph-light ph-pencil-simple" style="font-size:20px;color:var(--c-fg3)"></i>
-            </button>`)}
-        </div>
-        <button onClick=${openEditor} style="height:52px;border-radius:12px;border:1px solid var(--c-s3);font-weight:800;display:flex;align-items:center;justify-content:center;gap:8px"><i class="ph-light ph-plus" style="font-size:18px"></i>Nuova scheda</button>
-        ${!st.workoutDone ? startButton(d) : null}
-      ` : null}
-      ${isVolume ? html`
-        <div style="display:flex;justify-content:space-between;align-items:baseline;padding:4px 4px 0"><span style="font-size:1rem;font-weight:800">Settimana 3 · serie allenanti</span><span style="font-size:.75rem;color:var(--c-fg3)">RPE ≥ 7</span></div>
-        <div style="display:flex;gap:16px;padding:0 4px;font-size:.75rem;color:var(--c-fg3);align-items:center"><span style="display:flex;gap:6px;align-items:center"><span style="width:18px;height:8px;border-radius:2px;background:var(--c-s3)"></span>Range efficace</span><span style="display:flex;gap:6px;align-items:center"><span style="width:18px;height:4px;border-radius:2px;background:var(--c-fg)"></span>Serie fatte</span></div>
-        <div style="background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px;padding:6px 16px">
-          ${VOLUME.map(v => html`
-            <div key=${v.name} style="padding:10px 0;border-bottom:1px solid var(--c-line);display:flex;flex-direction:column;gap:7px">
-              <div style="display:flex;justify-content:space-between;font-size:.9375rem"><span style="font-weight:700">${v.name}</span><span style="font-variant-numeric:tabular-nums"><b>${v.sets}</b> <span style="color:var(--c-fg3)">/ ${v.range}</span></span></div>
-              <div style="position:relative;height:10px;border-radius:3px;background:var(--c-s2)"><div style=${`position:absolute;top:0;bottom:0;left:${v.bandL};width:${v.bandW};background:var(--c-s3);border-radius:2px`}></div><div style=${`position:absolute;top:3px;height:4px;left:0;width:${v.fill};background:${v.fc};border-radius:2px`}></div></div>
-              <span style=${`font-size:.75rem;font-weight:700;color:${v.sc}`}>${v.status}</span>
-            </div>`)}
-        </div>
-        <p style="margin:0;padding:0 4px;font-size:.8125rem;line-height:1.5;color:var(--c-fg3)">Range efficace: tra il volume minimo per progredire e il massimo recuperabile. Femorali e polpacci sono sotto: il coach propone 2 serie in più nel Lower B.</p>
-      ` : null}
-      ${isLib ? html`
-        <label style="height:48px;border-radius:12px;background:var(--c-s2);display:flex;align-items:center;gap:10px;padding:0 14px"><i class="ph-light ph-magnifying-glass" style="font-size:20px;color:var(--c-fg3)"></i><input value=${st.libQuery} onInput=${e => GT.set({ libQuery: e.target.value })} placeholder="Cerca esercizio" style="flex:1;border:0;outline:0;background:none;font-size:1rem;height:44px" /></label>
-        <div style="display:flex;gap:6px;overflow-x:auto;margin:0 -16px;padding:0 16px">
-          ${libChips.map(c => html`<button key=${c.label} onClick=${c.go} style=${`flex:none;height:36px;padding:0 14px;border-radius:999px;font-size:.8125rem;font-weight:700;background:${c.bg};color:${c.fg};border:1px solid var(--c-s3)`}>${c.label}</button>`)}
-        </div>
-        <div style="display:flex;flex-direction:column">
-          ${list.map(x => html`
-            <button key=${x.id} onClick=${x.open} style="display:grid;grid-template-columns:56px 1fr auto;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--c-line);text-align:left">
-              <div style="width:56px;height:56px;border-radius:8px;background:var(--c-s2);display:grid;place-items:center"><i class="ph-fill ph-play" style="font-size:16px;color:var(--c-fg3)"></i></div>
-              <div><div style="font-weight:700;font-size:.9375rem">${x.n}</div><div style="font-size:.8125rem;color:var(--c-fg3);margin-top:2px">${x.m} · ${x.eq}</div></div>
-              <i class="ph-light ph-caret-right" style="font-size:18px;color:var(--c-fg3)"></i>
-            </button>`)}
-          ${!list.length ? html`<div style="padding:32px 8px;text-align:center;color:var(--c-fg3);font-size:.9375rem">Nessun esercizio per “${st.libQuery}”.<br />Prova con il nome del muscolo.</div>` : null}
-        </div>
-      ` : null}
+      ${!hasLog ? emptyState('stack', 'Le serie si contano quando registri un allenamento',
+        `Questa settimana nessuna sessione salvata. Sotto vedi il volume che il piano prevede: ${GT.fmt(sum(GT.MUSCLES, m => planned[m.k] || 0))} serie a settimana.`,
+        st.s ? { label: `Riprendi ${st.s.dayName}`, go: () => A.startSession(), icon: 'ph-fill ph-play' }
+          : todayGym ? { label: `Inizia ${todayGym.day.name}`, go: () => A.startSession(todayGym.id), icon: 'ph-fill ph-play' }
+          : { label: 'Vai alla scheda', go: () => GT.set({ allenSub: 'scheda' }) }) : null}
+      <div style="display:flex;justify-content:space-between;align-items:baseline;padding:4px 4px 0;gap:8px"><span style="font-size:1rem;font-weight:800">Settimana ${w.cycle.num} · serie allenanti</span><span style="font-size:.75rem;color:var(--c-fg3);white-space:nowrap">${effTxt}</span></div>
+      <div style="display:flex;gap:14px;padding:0 4px;font-size:.75rem;color:var(--c-fg3);align-items:center;flex-wrap:wrap">
+        <span style="display:flex;gap:6px;align-items:center"><span style="width:18px;height:8px;border-radius:2px;background:var(--c-s3)"></span>Range efficace</span>
+        ${hasLog ? html`<span style="display:flex;gap:6px;align-items:center"><span style="width:18px;height:4px;border-radius:2px;background:var(--c-acc)"></span>Serie fatte</span>` : null}
+        <span style="display:flex;gap:6px;align-items:center"><span style="width:2px;height:12px;border-radius:1px;background:var(--c-fg2)"></span>Pianificate</span>
+      </div>
+      <div style=${S.card + ';padding:6px 16px'}>
+        ${rows.map((v, i) => html`
+          <div key=${v.k} style=${`padding:10px 0;${i < rows.length - 1 ? 'border-bottom:1px solid var(--c-line);' : ''}display:flex;flex-direction:column;gap:7px`}>
+            <div style="display:flex;justify-content:space-between;font-size:.9375rem"><span style="font-weight:700">${v.name}</span><span style="font-variant-numeric:tabular-nums"><b>${GT.fmt(v.v)}</b> <span style="color:var(--c-fg3)">/ ${v.range}</span></span></div>
+            <div role="img" aria-label=${`${v.name}: ${GT.fmt(v.v)} serie${hasLog ? `, pianificate ${GT.fmt(v.p)}` : ' pianificate'}, range ${v.range}`} style="position:relative;height:10px;border-radius:3px;background:var(--c-s2)">
+              <div style=${`position:absolute;top:0;bottom:0;left:${v.bandL};width:${v.bandW};background:var(--c-s3);border-radius:2px`}></div>
+              ${hasLog ? html`<div style=${`position:absolute;top:3px;height:4px;left:0;width:${v.fill};background:var(--c-acc);border-radius:2px`}></div>` : null}
+              ${v.p > 0 ? html`<div style=${`position:absolute;top:-2px;height:14px;width:2px;margin-left:-1px;left:${v.mark};background:var(--c-fg2);border-radius:1px`}></div>` : null}
+            </div>
+            <span style=${`font-size:.75rem;font-weight:700;color:${v.sc}`}>${v.status}</span>
+          </div>`)}
+      </div>
+      <p style="margin:0;padding:0 4px;font-size:.8125rem;line-height:1.5;color:var(--c-fg3)">${note}</p>
+    `;
+  }
+
+  // ---------- Palestra · Libreria ----------
+  function libreria(st) {
+    const q = (st.libQuery || '').trim().toLowerCase();
+    const group = LIB_GROUPS[st.libMuscle] || null;
+    const all = GT.CATALOG.filter(e => (!group || group.indexOf(e.m) >= 0)
+      && (!q || e.n.toLowerCase().indexOf(q) >= 0 || (GT.MUSCLE_NAME[e.m] || '').toLowerCase().indexOf(q) >= 0))
+      .map(e => ({ e, ok: GT.exAllowed(e, st.profile) }));
+    // Exercises the user can do first, catalog order otherwise
+    const list = all.filter(x => x.ok).concat(all.filter(x => !x.ok));
+    const okCount = all.filter(x => x.ok).length;
+    const chips = ui.chip(Object.keys(LIB_GROUPS), LIB_GROUPS[st.libMuscle] !== undefined ? st.libMuscle : 'Tutti', x => GT.set({ libMuscle: x }));
+
+    return html`
+      <label style="height:48px;border-radius:12px;background:var(--c-s2);display:flex;align-items:center;gap:10px;padding:0 6px 0 14px">
+        <i class="ph-light ph-magnifying-glass" style="font-size:20px;color:var(--c-fg3)"></i>
+        <input value=${st.libQuery || ''} onInput=${e => GT.set({ libQuery: e.target.value })} placeholder="Cerca esercizio o muscolo" aria-label="Cerca esercizio" type="search" enterkeyhint="search" autocomplete="off" style="flex:1;min-width:0;border:0;outline:0;background:none;font-size:1rem;height:44px" />
+        ${q ? html`<button onClick=${() => GT.set({ libQuery: '' })} aria-label="Cancella ricerca" style="width:40px;height:40px;display:grid;place-items:center;color:var(--c-fg3)"><i class="ph-fill ph-x-circle" style="font-size:20px"></i></button>` : null}
+      </label>
+      <div class="scroll" style="display:flex;gap:6px;overflow-x:auto;margin:0 -16px;padding:0 16px">
+        ${chips.map(c => html`<button key=${c.label} onClick=${c.go} aria-pressed=${c.active} style=${`flex:none;height:36px;padding:0 14px;border-radius:999px;font-size:.8125rem;font-weight:700;background:${c.bg};color:${c.fg};border:1px solid ${c.active ? 'var(--c-acc)' : 'var(--c-s3)'}`}>${c.label}</button>`)}
+      </div>
+      ${list.length ? html`<div style="padding:0 4px;font-size:.75rem;color:var(--c-fg3)">${list.length} esercizi · ${okCount} adatti al tuo profilo</div>` : null}
+      <div style="display:flex;flex-direction:column">
+        ${list.map(({ e, ok }) => html`
+          <button key=${e.id} onClick=${() => GT.set({ allenView: 'exercise', exDetail: e.id, exBack: null })} style="display:grid;grid-template-columns:56px 1fr auto;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--c-line);text-align:left">
+            <div style="width:56px;height:56px;border-radius:8px;background:var(--c-s2);display:grid;place-items:center"><i class="ph-fill ph-play" style="font-size:16px;color:var(--c-fg3)"></i></div>
+            <div style="min-width:0">
+              <div style=${`font-weight:700;font-size:.9375rem;color:${ok ? 'var(--c-fg)' : 'var(--c-fg2)'}`}>${e.n}</div>
+              <div style="font-size:.8125rem;color:var(--c-fg3);margin-top:2px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span>${GT.MUSCLE_NAME[e.m] || e.m} · ${GT.eqLabel(e)}</span>${!ok ? html`<span style="font-size:.6875rem;font-weight:700;padding:2px 7px;border-radius:999px;border:1px solid var(--c-s3);color:var(--c-fg3)">non disponibile</span>` : null}</div>
+            </div>
+            <i class="ph-light ph-caret-right" style="font-size:18px;color:var(--c-fg3)"></i>
+          </button>`)}
+        ${!list.length ? html`<div style="padding:32px 8px;text-align:center;color:var(--c-fg3);font-size:.9375rem;line-height:1.5">${q ? html`Nessun esercizio per “${st.libQuery.trim()}”${group ? ` in ${st.libMuscle}` : ''}.<br />Prova con il nome del muscolo.` : 'Nessun esercizio in questo gruppo.'}</div>` : null}
+      </div>
+    `;
+  }
+
+  function palestra(st, d, w) {
+    const sub = ['scheda', 'volume', 'libreria'].indexOf(st.allenSub) >= 0 ? st.allenSub : 'scheda';
+    const segs = ui.seg([['scheda', 'Scheda'], ['volume', 'Volume'], ['libreria', 'Libreria']], sub, x => GT.set({ allenSub: x }));
+    return html`
+      ${ui.Seg(segs)}
+      ${sub === 'scheda' ? scheda(st, d, w) : null}
+      ${sub === 'volume' ? volume(st, d, w) : null}
+      ${sub === 'libreria' ? libreria(st) : null}
     `;
   }
 
   // ---------- Corsa ----------
-  function corsa(st) {
-    const runKmDone = GT.fmt(['rip', 'lungo'].reduce((a, id) => a + (st.cardioDone[id] ? st.cardioDone[id].v : 0), 0));
+  function cardioCard(c, label, done, open, withProfile) {
     return html`
-      <div style="background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-end"><div><div style="font-size:.75rem;color:var(--c-fg3)">Volume corsa · settimana 3</div><div style="font-size:2.25rem;font-weight:900;letter-spacing:-.03em;line-height:1.05;font-variant-numeric:tabular-nums">${runKmDone} <span style="font-size:1rem;font-weight:700;color:var(--c-fg2)">/ 23,2 km</span></div></div><div style="text-align:right;font-size:.8125rem;color:var(--c-fg3);line-height:1.5">Sett. 2: 20,4 km<br />+14% · limite +15%</div></div>
-        <div><div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--c-fg3);margin-bottom:6px"><span>Intensità pianificata</span><span>78% facile · 22% qualità</span></div><div style="display:flex;gap:2px;height:10px;border-radius:3px;overflow:hidden"><div style="width:78%;background:var(--c-sec)"></div><div style="width:22%;background:var(--c-acc)"></div></div></div>
+      <button key=${c.id} class="press" onClick=${open} style=${S.card + ';padding:14px 16px;display:flex;flex-direction:column;gap:10px;text-align:left'}>
+        <div style="display:flex;justify-content:space-between;width:100%;align-items:center;gap:8px"><span style=${`font-size:.75rem;font-weight:800;color:${c.tag === 'Qualità' ? 'var(--c-acc-t)' : 'var(--c-fg3)'}`}>${label} · ${c.tag}</span>${done ? doneBadge() : null}</div>
+        <div style="font-size:1.25rem;font-weight:900;letter-spacing:-.01em">${c.name}</div>
+        ${withProfile ? profileBars(c, 28, 2) : null}
+        <div style="display:flex;gap:14px;font-size:.8125rem;color:var(--c-fg2);font-variant-numeric:tabular-nums"><span>${c.kind === 'corsa' ? `${GT.fmt(c.km)} km` : `${GT.fk(c.m)} m`}</span><span>~${c.min} min</span><span>RPE ${c.rpe}</span></div>
+      </button>`;
+  }
+
+  function corsa(st, w) {
+    const plan = st.plan, run = plan.run;
+    if (!run) {
+      return emptyState('person-simple-run', 'Non hai inserito la corsa nel questionario',
+        'Indica quante volte corri e quanti km fai a settimana (e, se ce l\'hai, un tempo sui 5 o 10 km): calcolo zone di passo e sedute adatte alla palestra.', toQuestionnaire);
+    }
+    const logs = cardioBetween(st, w.monday, w.sunday, 'corsa');
+    const kmDone = sum(logs, l => Number(l.v) || 0);
+    const prevKm = sum(cardioBetween(st, GT.addDays(w.monday, -7), GT.addDays(w.monday, -1), 'corsa'), l => Number(l.v) || 0);
+    const growth = prevKm > 0 && kmDone > 0 ? Math.round((kmDone - prevKm) / prevKm * 100) : null;
+    // Planned intensity: minutes of blocks at intensity >= 4 vs the rest
+    let easy = 0, qual = 0;
+    run.order.forEach(id => { const c = run.sessions[id]; if (c) c.blocks.forEach(b => { if (b[3] >= 4) qual += b[4]; else easy += b[4]; }); });
+    const qPct = easy + qual ? Math.round(qual / (easy + qual) * 100) : 0, ePct = 100 - qPct;
+    const r = (st.profile && st.profile.run) || {}, td = Number(r.testDist);
+    const hasTest = GT.parseTime(r.testTime) > 0 && (td === 5 || td === 10);
+    // The test the user actually ran (a 5 km time is converted to a 10 km pace by plan.js)
+    const zoneSrc = hasTest ? `da ${td} km in ${hms(GT.parseTime(r.testTime))}` : 'stima dal volume';
+    const lib = Object.keys(run.library).map(id => run.library[id]);
+
+    return html`
+      <div style=${S.card + ';padding:16px;display:flex;flex-direction:column;gap:12px'}>
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px">
+          <div><div style="font-size:.75rem;color:var(--c-fg3)">Volume corsa · settimana ${w.cycle.num}</div><div style="font-size:2.25rem;font-weight:900;letter-spacing:-.03em;line-height:1.05;font-variant-numeric:tabular-nums">${GT.fmt(kmDone)} <span style="font-size:1rem;font-weight:700;color:var(--c-fg2)">/ ${GT.fmt(run.weeklyKm)} km</span></div></div>
+          <div style="text-align:right;font-size:.8125rem;color:var(--c-fg3);line-height:1.5;font-variant-numeric:tabular-nums">${prevKm > 0
+            ? html`Sett. prec.: ${GT.fmt(prevKm)} km<br />${growth != null ? html`<span style=${growth > 15 ? 'color:var(--c-acc-t);font-weight:700' : ''}>${growth >= 0 ? '+' : ''}${growth}%</span> · limite +15%` : 'limite +15%'}`
+            : html`Aumento massimo<br />+15% a settimana`}</div>
+        </div>
+        <div><div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--c-fg3);margin-bottom:6px;gap:8px"><span>Intensità pianificata</span><span>${ePct}% facile · ${qPct}% qualità</span></div><div style="display:flex;gap:2px;height:10px;border-radius:3px;overflow:hidden"><div style=${`width:${ePct}%;background:var(--c-sec)`}></div>${qPct ? html`<div style=${`width:${qPct}%;background:var(--c-acc)`}></div>` : null}</div></div>
+        ${!logs.length ? html`<div style="font-size:.8125rem;color:var(--c-fg3);line-height:1.45">Nessuna corsa registrata questa settimana. Apri una seduta e premi “Registra seduta”: i km si aggiornano qui.</div>` : null}
       </div>
       <div style=${EYEBROW_PAD}>Programma corsa</div>
-      ${runSessions(st).map(c => html`
-        <button key=${c.id} onClick=${c.open} style="background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;text-align:left">
-          <div style="display:flex;justify-content:space-between;width:100%;align-items:center"><span style=${`font-size:.75rem;font-weight:800;color:${c.dc}`}>${c.day} · ${c.tag}</span>${c.done ? doneBadge() : null}</div>
-          <div style="font-size:1.25rem;font-weight:900;letter-spacing:-.01em">${c.name}</div>
-          <div style="display:flex;align-items:flex-end;gap:2px;height:28px;width:100%">${c.profile.map((b, i) => html`<div key=${i} style=${`flex:${b.f};height:${b.h};background:${b.bg};border-radius:2px`}></div>`)}</div>
-          <div style="display:flex;gap:14px;font-size:.8125rem;color:var(--c-fg2);font-variant-numeric:tabular-nums"><span>${c.dist}</span><span>${c.dur}</span><span>RPE ${c.rpe}</span></div>
-        </button>`)}
-      <div style="background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px;padding:6px 16px">
-        <div style="display:flex;justify-content:space-between;padding:10px 0"><span style=${S.eyebrow}>Zone di passo</span><span style="font-size:.75rem;color:var(--c-fg3)">da 10 km in 47:30</span></div>
-        ${PACE_ZONES.map(z => html`<div key=${z.z} style="display:grid;grid-template-columns:36px 1fr auto;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--c-line);font-size:.875rem"><span style="font-weight:900">${z.z}</span><span>${z.n}</span><span style="font-weight:800;font-variant-numeric:tabular-nums">${z.p}</span></div>`)}
+      ${run.order.map(id => {
+        const c = run.sessions[id]; if (!c) return null;
+        const sched = schedOf(plan, 'run', id);
+        return cardioCard(c, sched.length ? sched.map(wd => dayLabel(wd, w)).join(' · ') : 'Non in calendario', logs.some(l => l.sessionId === id), () => openCardio(id, 'corsa'), true);
+      })}
+      <div style=${S.card + ';padding:6px 16px'}>
+        <div style="display:flex;justify-content:space-between;padding:10px 0;gap:8px"><span style=${S.eyebrow}>Zone di passo</span><span style="font-size:.75rem;color:var(--c-fg3);font-variant-numeric:tabular-nums">${zoneSrc}</span></div>
+        ${run.zones.map(z => html`<div key=${z.z} style="display:grid;grid-template-columns:36px 1fr auto;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--c-line);font-size:.875rem"><span style="font-weight:900">${z.z}</span><span>${z.n}</span><span style="font-weight:800;font-variant-numeric:tabular-nums">${z.label} /km</span></div>`)}
       </div>
+      ${!hasTest ? html`<p style="margin:-4px 0 0;padding:0 4px;font-size:.8125rem;line-height:1.5;color:var(--c-fg3)">Zone stimate dai km settimanali. Con un tempo recente sui 5 o 10 km (Profilo) diventano precise.</p>` : null}
       <div style=${EYEBROW_PAD}>Libreria allenamenti</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${runLib().map(r => html`<button key=${r.id} onClick=${r.open} style="min-height:64px;padding:10px 12px;border-radius:12px;border:1px solid var(--c-s3);text-align:left;display:flex;flex-direction:column;justify-content:center;gap:2px"><span style="font-weight:800;font-size:.9375rem">${r.n}</span><span style="font-size:.75rem;color:var(--c-fg3)">${r.d}</span></button>`)}</div>
-      <div style="border:1px dashed var(--c-s3);border-radius:12px;padding:14px 16px;display:flex;gap:12px;align-items:flex-start"><i class="ph-light ph-person-simple-run" style="font-size:22px;color:var(--c-fg3);flex:none"></i><div><div style="display:flex;gap:8px;align-items:center"><span style="font-weight:800">Corse registrate</span><span style=${BADGE}>Strava · in arrivo</span></div><div style="font-size:.8125rem;color:var(--c-fg3);line-height:1.45;margin-top:4px">Con Strava passo, FC e dislivello arrivano da soli. Ora registri a mano distanza, tempo e RPE.</div></div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${lib.map(c => html`<button key=${c.id} class="press" onClick=${() => openCardio(c.id, 'corsa')} style="min-height:64px;padding:10px 12px;border-radius:12px;border:1px solid var(--c-s3);text-align:left;display:flex;flex-direction:column;justify-content:center;gap:2px"><span style="font-weight:800;font-size:.9375rem">${c.name}</span><span style="font-size:.75rem;color:var(--c-fg3)">${c.tag} · ~${c.min} min</span></button>`)}</div>
+      ${dashedSlot('person-simple-run', 'Corse registrate', 'Strava · in arrivo', 'Con Strava passo, FC e dislivello arriveranno da soli. Ora registri a mano distanza, tempo e RPE.')}
     `;
   }
 
   // ---------- Piscina ----------
-  function piscina(st) {
+  function piscina(st, w) {
+    const plan = st.plan, swim = plan.swim;
+    if (!swim) {
+      return emptyState('swimming-pool', 'Non hai inserito il nuoto nel questionario',
+        'Il nuoto qui serve da defaticamento: sedute aerobiche leggere tra palestra e corsa. Indica quante volte vai in piscina e lo inserisco nel calendario.', toQuestionnaire);
+    }
+    const monthStart = w.today.slice(0, 8) + '01';
+    const month = cardioBetween(st, monthStart, w.today, 'piscina');
+    const week = cardioBetween(st, w.monday, w.sunday, 'piscina');
+    const stats = [
+      { l: 'Questo mese', v: month.length ? `${GT.fk(sum(month, l => Number(l.v) || 0))} m` : '—' },
+      { l: 'Sedute', v: month.length ? String(month.length) : '—' },
+      { l: 'RPE medio', v: month.length ? GT.fmt(sum(month, l => Number(l.e) || 0) / month.length) : '—' }
+    ];
+    const wds = [];
+    swim.order.forEach(id => schedOf(plan, 'swim', id).forEach(wd => { if (wds.indexOf(wd) < 0) wds.push(wd); }));
+    wds.sort((a, b) => a - b);
+    const after = [plan.run ? 'il giorno dopo il lungo' : null, plan.days.length ? 'dopo le gambe' : null].filter(Boolean);
+    const coach = `Defaticamento: nuoto aerobico a RPE 2–4${after.length ? ', ' + after.join(' o ') : ''}.`
+      + (wds.length ? ` Nel tuo piano: ${joinIt(wds.map(wd => GT.DAYS_LONG[wd].toLowerCase()))}.` : '')
+      + ' Non conta nel volume di palestra.';
+
     return html`
-      <div style="background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px;padding:16px;display:flex;gap:12px;align-items:flex-start"><span style="flex:none;width:36px;height:36px;border-radius:50%;background:var(--c-acc);color:var(--c-on-acc);display:grid;place-items:center"><i class="ph-bold ph-lightning" style="font-size:18px"></i></span><div><div style=${S.eyebrow}>Ruolo della piscina</div><p style="margin:4px 0 0;font-size:.9375rem;line-height:1.45">Defaticamento: nuoto aerobico a RPE 3–4, il giorno dopo il lungo o dopo le gambe. Non conta nel volume di palestra.</p></div></div>
-      <div style="flex:none;display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--c-line);border:1px solid var(--c-line);border-radius:12px;overflow:hidden">${SWIM_STATS.map(s => html`<div key=${s.l} style="background:var(--c-s1);padding:12px"><div style="font-size:.75rem;color:var(--c-fg3)">${s.l}</div><div style="font-size:1.375rem;font-weight:900;font-variant-numeric:tabular-nums">${s.v}</div></div>`)}</div>
+      ${ui.coachCard('Ruolo della piscina', coach)}
+      ${statStrip(stats, '1.375rem')}
+      ${!month.length ? html`<div style="padding:0 4px;font-size:.8125rem;color:var(--c-fg3);line-height:1.45">Ancora nessuna seduta registrata questo mese. Apri una seduta e premi “Registra seduta”.</div>` : null}
       <div style=${EYEBROW_PAD}>Sedute di recupero</div>
-      ${swimSessions(st).map(c => html`
-        <button key=${c.id} onClick=${c.open} style="background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;text-align:left">
-          <div style="display:flex;justify-content:space-between;width:100%;align-items:center"><span style=${`font-size:.75rem;font-weight:800;color:${c.dc}`}>${c.day} · ${c.tag}</span>${c.done ? doneBadge() : null}</div>
-          <div style="font-size:1.25rem;font-weight:900;letter-spacing:-.01em">${c.name}</div>
-          <div style="display:flex;gap:14px;font-size:.8125rem;color:var(--c-fg2);font-variant-numeric:tabular-nums"><span>${c.dist}</span><span>${c.dur}</span><span>RPE ${c.rpe}</span></div>
-        </button>`)}
-      <div style="border:1px dashed var(--c-s3);border-radius:12px;padding:14px 16px;display:flex;gap:12px;align-items:flex-start"><i class="ph-light ph-watch" style="font-size:22px;color:var(--c-fg3);flex:none"></i><div><div style="display:flex;gap:8px;align-items:center"><span style="font-weight:800">Vasche e SWOLF</span><span style=${BADGE}>Garmin · in arrivo</span></div><div style="font-size:.8125rem;color:var(--c-fg3);line-height:1.45;margin-top:4px">Dall'orologio arriveranno vasche, ritmo per 100 m e FC. Vasca impostata: 25 m.</div></div></div>
+      ${swim.order.map(id => {
+        const c = swim.sessions[id]; if (!c) return null;
+        const sched = schedOf(plan, 'swim', id);
+        return cardioCard(c, sched.length ? sched.map(wd => dayLabel(wd, w)).join(' · ') : 'Non in calendario', week.some(l => l.sessionId === id), () => openCardio(id, 'piscina'), false);
+      })}
+      ${dashedSlot('watch', 'Vasche e SWOLF', 'Garmin · in arrivo', 'Dall\'orologio arriveranno vasche, ritmo per 100 m e FC. Ora registri a mano metri, tempo e RPE.')}
     `;
   }
 
   // ---------- Tab: Allena ----------
   GT.screens.allena = function (st, d) {
+    const plan = st.plan;
+    if (!plan) return null;
+    const w = weekCtx(st, d);
+    const eyebrow = `Settimana ${w.cycle.num} di ${plan.cycleWeeks} · ${GT.fmtRange(w.monday, w.sunday)}${w.cycle.deload ? ' · scarico' : ''}`;
+    const strip = weekStrip(st, w);
+    const cnt = { gym: 0, run: 0, swim: 0 };
+    plan.week.forEach(x => x.items.forEach(it => { if (cnt[it.type] != null) cnt[it.type]++; }));
+    const caption = [[cnt.gym, 'palestra'], [cnt.run, 'corsa'], [cnt.swim, 'piscina']].filter(x => x[0] > 0).map(x => `${x[0]} ${x[1]}`).join(' · ') || 'Nessuna seduta in calendario';
+    const disc = ['palestra', 'corsa', 'piscina'].indexOf(st.disc) >= 0 ? st.disc : 'palestra';
+
     return html`<div class="scroll" style=${S.tabScroll}>
-      ${ui.header('Settimana 3 · 9–15 nov', 'Allenamento')}
+      ${ui.header(eyebrow, 'Allenamento')}
       <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">
-        ${weekPlan(st).map(x => html`<button key=${x.n} onClick=${x.go} style=${`height:84px;border-radius:10px;background:${x.bg};border:1.5px solid ${x.bd};display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:8px 0 7px`}><span style="font-size:.6875rem;font-weight:700;color:var(--c-fg3)">${x.d}</span><span style="font-size:1rem;font-weight:900;font-variant-numeric:tabular-nums">${x.n}</span><i class=${x.icon} style=${`font-size:20px;color:${x.ic}`}></i></button>`)}
+        ${strip.map(x => html`<button key=${x.date} onClick=${x.go || undefined} aria-disabled=${x.go ? null : 'true'} aria-label=${x.label} style=${`height:84px;border-radius:10px;background:${x.done ? 'var(--c-s2)' : 'var(--c-s1)'};border:1.5px solid ${x.isToday ? 'var(--c-acc)' : 'var(--c-line)'};display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:8px 0 7px;min-width:0;cursor:${x.go ? 'pointer' : 'default'}`}>
+          <span style="font-size:.6875rem;font-weight:700;color:var(--c-fg3)">${x.letter}</span>
+          <span style="font-size:1rem;font-weight:900;font-variant-numeric:tabular-nums">${x.n}</span>
+          ${x.icon
+            ? html`<span style="position:relative;display:inline-flex"><i class=${x.icon} style=${`font-size:20px;color:${x.done ? 'var(--c-sec)' : 'var(--c-fg2)'}`}></i>${x.multi && !x.done ? html`<span style=${`position:absolute;top:-1px;right:-7px;width:5px;height:5px;border-radius:50%;background:${x.someDone ? 'var(--c-sec)' : 'var(--c-fg3)'}`}></span>` : null}</span>`
+            : html`<span style="height:20px;display:grid;place-items:center"><span style="width:10px;height:2px;border-radius:1px;background:var(--c-s3)"></span></span>`}
+        </button>`)}
       </div>
-      <div style="display:flex;gap:16px;padding:0 4px;font-size:.75rem;color:var(--c-fg3)"><span>4 palestra · 2 corsa · 1 piscina</span><span style="margin-left:auto;display:flex;gap:6px;align-items:center"><i class="ph-bold ph-check" style="font-size:12px;color:var(--c-fg)"></i>fatto</span><span style="display:flex;gap:6px;align-items:center"><span style="width:10px;height:10px;border-radius:3px;border:1.5px solid var(--c-acc)"></span>oggi</span></div>
+      <div style="display:flex;gap:16px;padding:0 4px;font-size:.75rem;color:var(--c-fg3);flex-wrap:wrap"><span>${caption}</span><span style="margin-left:auto;display:flex;gap:6px;align-items:center"><i class="ph-bold ph-check" style="font-size:12px;color:var(--c-sec)"></i>fatto</span><span style="display:flex;gap:6px;align-items:center"><span style="width:10px;height:10px;border-radius:3px;border:1.5px solid var(--c-acc)"></span>oggi</span></div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
-        ${discs(st).map(x => html`<button key=${x.id} onClick=${x.go} aria-pressed=${st.disc === x.id} style=${`height:64px;border-radius:12px;background:${x.bg};color:${x.fg};border:1px solid ${x.bd};display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px`}><i class=${x.icon} style="font-size:24px"></i><span style="font-size:.8125rem;font-weight:900">${x.label}</span></button>`)}
+        ${discs(Object.assign({}, st, { disc })).map(x => html`<button key=${x.id} class="press" onClick=${x.go} aria-pressed=${x.active} aria-label=${x.aria} style=${`height:64px;border-radius:12px;background:${x.bg};color:${x.fg};border:${x.bd};display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px`}><i class=${x.icon} style="font-size:24px"></i><span style="font-size:.8125rem;font-weight:900">${x.label}</span></button>`)}
       </div>
-      ${st.disc === 'palestra' ? palestra(st, d) : null}
-      ${st.disc === 'corsa' ? corsa(st) : null}
-      ${st.disc === 'piscina' ? piscina(st) : null}
+      ${disc === 'palestra' ? palestra(st, d, w) : null}
+      ${disc === 'corsa' ? corsa(st, w) : null}
+      ${disc === 'piscina' ? piscina(st, w) : null}
     </div>`;
   };
 
-  // ---------- renderVals() port: cardio detail ----------
-  function cardioVals(st) {
-    const c = GT.CARDIO[st.cardioId] || GT.CARDIO.rip, run = c.kind === 'corsa', dn = st.cardioDone[st.cardioId];
-    return {
-      run, dn,
-      cd: Object.assign({}, c, {
-        back: run ? 'Corsa' : 'Piscina',
-        dist: run ? `${GT.fmt(c.km)} km` : `${GT.fk(c.m)} m`,
-        dur: `${c.min} min`,
-        profile: GT.profileOf(c),
-        blocks: c.blocks.map((b, i) => ({ i: i + 1, n: b[0], d: b[1], v: b[2], c: b[3] >= 4 ? 'var(--c-acc-t)' : 'var(--c-fg)' }))
-      }),
-      cdDoneLine: dn ? `Registrata · ${run ? GT.fmt(dn.v) + ' km' : GT.fk(dn.v) + ' m'} · ${dn.t} min · RPE ${dn.e}` : ''
-    };
-  }
-
   // ---------- Full screen: cardio session detail ----------
-  GT.screens.cardioDetail = function (st) {
-    const { cd, dn, cdDoneLine } = cardioVals(st);
+  GT.screens.cardioDetail = function (st, d) {
+    const plan = st.plan, c = GT.findCardio(plan, st.cardioId);
+    const run = c ? c.kind === 'corsa' : st.disc !== 'piscina';
+    const back = () => GT.set({ allenView: null, exBack: null, disc: run ? 'corsa' : 'piscina' });
+    if (!c) {
+      return html`<div class="scroll" style=${S.full + ';padding:var(--top) 16px calc(var(--pb) + 24px);display:flex;flex-direction:column;gap:14px'}>
+        ${ui.back('Allena', back)}
+        ${emptyState('warning-circle', 'Seduta non trovata', 'Il piano è stato aggiornato e questa seduta non c\'è più. Scegline una dal programma.', { label: 'Torna ad Allena', go: back })}
+      </div>`;
+    }
+    const w = weekCtx(st, d || {});
+    const sched = schedOf(plan, DISC_TYPE[c.kind], c.id);
+    const where = sched.length ? sched.map(wd => dayLabel(wd, w)).join(' · ') : 'Libreria';
+    const dn = (st.logs.cardio || []).filter(l => l.date === w.today && l.sessionId === st.cardioId)[0] || null;
+    const fmtV = v => run ? `${GT.fmt(v)} km` : `${GT.fk(v)} m`;
+    const stats = [{ l: 'Distanza', v: fmtV(run ? c.km : c.m) }, { l: 'Durata', v: `${c.min} min` }, { l: 'RPE', v: c.rpe }];
+    const blocks = c.blocks.map((b, i) => ({ i: i + 1, n: b[0], d: b[1], v: b[2], col: b[3] >= 4 ? 'var(--c-acc-t)' : 'var(--c-fg)' }));
+    // Correct today's entry: reopen the sheet with the saved values
+    const editLog = () => GT.set({ overlay: 'cardioLog', log: { v: dn.v, t: dn.t, e: dn.e } });
+
     return [
       html`<div key="cd-scroll" class="scroll" style=${S.full + ';padding:var(--top) 16px calc(var(--pb) + 96px);display:flex;flex-direction:column;gap:14px'}>
-        ${ui.back(cd.back, A.closeAllenView)}
-        <div><div style=${S.eyebrow}>${cd.day} · ${cd.tag}</div><h2 style="margin:4px 0 0;font-size:1.75rem;font-weight:900;letter-spacing:-.02em;line-height:1.1">${cd.name}</h2></div>
-        <div style="flex:none;display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--c-line);border:1px solid var(--c-line);border-radius:12px;overflow:hidden"><div style="background:var(--c-s1);padding:12px"><div style="font-size:.75rem;color:var(--c-fg3)">Distanza</div><div style="font-size:1.25rem;font-weight:900;font-variant-numeric:tabular-nums">${cd.dist}</div></div><div style="background:var(--c-s1);padding:12px"><div style="font-size:.75rem;color:var(--c-fg3)">Durata</div><div style="font-size:1.25rem;font-weight:900;font-variant-numeric:tabular-nums">${cd.dur}</div></div><div style="background:var(--c-s1);padding:12px"><div style="font-size:.75rem;color:var(--c-fg3)">RPE</div><div style="font-size:1.25rem;font-weight:900;font-variant-numeric:tabular-nums">${cd.rpe}</div></div></div>
-        <div style="flex:none;display:flex;align-items:flex-end;gap:2px;height:56px">${cd.profile.map((b, i) => html`<div key=${i} style=${`flex:${b.f};height:${b.h};background:${b.bg};border-radius:3px`}></div>`)}</div>
-        <div style="display:flex;flex-direction:column;background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px;padding:0 16px">
-          ${cd.blocks.map(b => html`<div key=${b.i} style="display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;padding:12px 0;border-bottom:1px solid var(--c-line)"><span style="font-weight:900;font-variant-numeric:tabular-nums;color:var(--c-fg3)">${b.i}</span><div><div style="font-weight:800">${b.n}</div><div style="font-size:.8125rem;color:var(--c-fg3);margin-top:2px">${b.d}</div></div><span style=${`font-weight:900;font-variant-numeric:tabular-nums;text-align:right;color:${b.c}`}>${b.v}</span></div>`)}
+        ${ui.back(run ? 'Corsa' : 'Piscina', back)}
+        <div><div style=${S.eyebrow}>${where} · ${c.tag}</div><h2 style="margin:4px 0 0;font-size:1.75rem;font-weight:900;letter-spacing:-.02em;line-height:1.1">${c.name}</h2></div>
+        ${statStrip(stats, '1.25rem')}
+        ${profileBars(c, 56, 3)}
+        <div style=${S.card + ';display:flex;flex-direction:column;padding:0 16px'}>
+          ${blocks.map((b, i) => html`<div key=${b.i} style=${`display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;padding:12px 0;${i < blocks.length - 1 ? 'border-bottom:1px solid var(--c-line)' : ''}`}><span style="font-weight:900;font-variant-numeric:tabular-nums;color:var(--c-fg3)">${b.i}</span><div style="min-width:0"><div style="font-weight:800">${b.n}</div><div style="font-size:.8125rem;color:var(--c-fg3);margin-top:2px">${b.d}</div></div><span style=${`font-weight:900;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;color:${b.col}`}>${b.v}</span></div>`)}
         </div>
-        <div style="background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px;padding:14px 16px;display:flex;gap:12px"><span style="flex:none;width:36px;height:36px;border-radius:50%;background:var(--c-acc);color:var(--c-on-acc);display:grid;place-items:center"><i class="ph-bold ph-lightning" style="font-size:18px"></i></span><div><div style=${S.eyebrow}>Coach</div><p style="margin:4px 0 0;font-size:.9375rem;line-height:1.45">${cd.note}</p></div></div>
-        <div style="display:flex;gap:10px;align-items:center;padding:12px 14px;border:1px dashed var(--c-s3);border-radius:12px;font-size:.8125rem;color:var(--c-fg3)"><i class="ph-light ph-watch" style="font-size:20px"></i><span style="flex:1">Invio all'orologio</span><span style=${BADGE}>Garmin · in arrivo</span></div>
+        ${c.note ? ui.coachCard('Coach', c.note) : null}
+        <div style="display:flex;gap:10px;align-items:center;padding:12px 14px;border:1px dashed var(--c-s3);border-radius:12px;font-size:.8125rem;color:var(--c-fg3)"><i class="ph-light ph-watch" style="font-size:20px"></i><span style="flex:1">Invio all'orologio</span>${ui.soon('Garmin · in arrivo')}</div>
       </div>`,
       html`<div key="cd-bar" style="position:absolute;left:0;right:0;bottom:0;z-index:21;padding:12px 16px var(--pb);background:var(--c-bg);border-top:1px solid var(--c-line)">
-        ${!dn ? html`<button onClick=${A.openCardioLog} style="height:64px;width:100%;border-radius:14px;background:var(--c-acc);color:var(--c-on-acc);font-size:1.125rem;font-weight:900;display:flex;align-items:center;justify-content:center;gap:10px"><i class="ph-bold ph-check" style="font-size:22px"></i>Registra seduta</button>` : null}
-        ${dn ? html`<div style="height:64px;border-radius:14px;background:var(--c-s2);display:flex;align-items:center;justify-content:center;gap:10px;font-weight:800"><i class="ph-bold ph-check" style="font-size:18px"></i>${cdDoneLine}</div>` : null}
+        ${dn
+          ? html`<button class="press" onClick=${editLog} aria-label="Registrata oggi, tocca per correggere" style="height:64px;width:100%;border-radius:14px;background:var(--c-s2);display:flex;align-items:center;justify-content:center;gap:10px;font-weight:800;font-variant-numeric:tabular-nums;padding:0 12px"><i class="ph-bold ph-check" style="font-size:18px;color:var(--c-sec)"></i><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Registrata · ${fmtV(dn.v)} · ${dn.t} min · RPE ${dn.e}</span></button>`
+          : ui.cta('Registra seduta', A.openCardioLog, { h: 64, icon: 'ph-bold ph-check', iconSize: 22 })}
       </div>`
     ];
   };
 
   // ---------- Sheet: cardio log ----------
   GT.screens.cardioLog = function (st) {
-    const c = GT.CARDIO[st.cardioId] || GT.CARDIO.rip, run = c.kind === 'corsa', L = st.log;
-    if (!L) return null;
-    const stp = run ? 0.1 : 50;
+    const c = GT.findCardio(st.plan, st.cardioId), L = st.log;
+    if (!c || !L) return null;
+    const run = c.kind === 'corsa', today = GT.todayISO();
+    const saved = (st.logs.cardio || []).some(l => l.date === today && l.sessionId === st.cardioId);
+    const clampV = x => run ? Math.max(0.1, Math.round(x * 10) / 10) : Math.max(50, Math.round(x));
+    const clampT = x => Math.max(1, Math.round(x));
     const setLog = fn => GT.set(s => ({ log: Object.assign({}, s.log, fn(s.log)) }));
-    const logFields = [
-      {
-        l: run ? 'Distanza' : 'Metri', v: run ? `${GT.fmt(L.v)} km` : `${GT.fk(L.v)} m`,
-        dec: () => setLog(l => ({ v: Math.max(stp, Math.round((l.v - stp) * 10) / 10) })),
-        inc: () => setLog(l => ({ v: Math.round((l.v + stp) * 10) / 10 }))
-      },
-      {
-        l: 'Tempo', v: `${L.t} min`,
-        dec: () => setLog(l => ({ t: Math.max(1, l.t - 1) })),
-        inc: () => setLog(l => ({ t: l.t + 1 }))
-      }
+    const bumpV = delta => setLog(l => ({ v: clampV((Number(l.v) || 0) + delta) }));
+    const bumpT = delta => setLog(l => ({ t: clampT((Number(l.t) || 0) + delta) }));
+    const v = Number(L.v) || 0, t = Number(L.t) || 0;
+    const fields = [
+      { l: run ? 'Distanza' : 'Metri', v: run ? `${GT.fmt(v)} km` : `${GT.fk(v)} m`, dec: () => bumpV(run ? -0.1 : -50), inc: () => bumpV(run ? 0.1 : 50),
+        bigL: run ? '1 km' : '250 m', bigDec: () => bumpV(run ? -1 : -250), bigInc: () => bumpV(run ? 1 : 250) },
+      { l: 'Tempo', v: `${t} min`, dec: () => bumpT(-1), inc: () => bumpT(1), bigL: '5 min', bigDec: () => bumpT(-5), bigInc: () => bumpT(5) }
     ];
-    const pace = run ? L.t / L.v : L.t / (L.v / 100);
-    const logPace = run ? `Passo medio ${GT.mmss(Math.round(pace * 60))} /km` : `Ritmo medio ${GT.mmss(Math.round(pace * 60))} /100 m`;
-    const logRpe = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => ({
-      n, bg: L.e === n ? 'var(--c-acc)' : 'var(--c-s2)', fg: L.e === n ? 'var(--c-on-acc)' : 'var(--c-fg)', go: () => setLog(() => ({ e: n }))
-    }));
+    const pace = v > 0 && t > 0 ? (run ? `Passo medio ${GT.pace(t * 60 / v)} /km` : `Ritmo medio ${GT.pace(t * 60 / (v / 100))} /100 m`) : '';
+    const rpe = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    const small = 'height:36px;padding:0 10px;border-radius:8px;font-size:.75rem;font-weight:800;color:var(--c-fg2);background:var(--c-s2);font-variant-numeric:tabular-nums';
 
     return ui.sheet(() => GT.set({ overlay: null }), html`
-      <div><div style="font-size:1.25rem;font-weight:900">Registra seduta</div><div style="font-size:.875rem;color:var(--c-fg3);margin-top:2px">${c.name} · valori pianificati, correggi se serve</div></div>
-      ${logFields.map(f => html`<div key=${f.l} style="display:flex;justify-content:space-between;align-items:center"><span style="font-weight:800">${f.l}</span><div style="display:flex;align-items:center;gap:4px;background:var(--c-s2);border-radius:12px"><button onClick=${f.dec} aria-label="Meno" style="width:52px;height:52px;display:grid;place-items:center"><i class="ph-light ph-minus" style="font-size:20px"></i></button><span style="min-width:96px;text-align:center;font-size:1.375rem;font-weight:900;font-variant-numeric:tabular-nums">${f.v}</span><button onClick=${f.inc} aria-label="Più" style="width:52px;height:52px;display:grid;place-items:center"><i class="ph-light ph-plus" style="font-size:20px"></i></button></div></div>`)}
-      <div style="font-size:.8125rem;color:var(--c-fg3);font-variant-numeric:tabular-nums">${logPace}</div>
-      <div><div style="font-weight:800;margin-bottom:8px">RPE della seduta</div><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px">${logRpe.map(o => html`<button key=${o.n} onClick=${o.go} aria-pressed=${L.e === o.n} style=${`height:44px;border-radius:10px;font-weight:900;background:${o.bg};color:${o.fg}`}>${o.n}</button>`)}</div></div>
-      <button onClick=${A.saveCardio} style="height:60px;border-radius:14px;background:var(--c-acc);color:var(--c-on-acc);font-size:1.0625rem;font-weight:900">Salva</button>
+      <div><div style="font-size:1.25rem;font-weight:900">Registra seduta</div><div style="font-size:.875rem;color:var(--c-fg3);margin-top:2px">${c.name} · oggi · ${saved ? 'valori registrati: correggili e salva' : 'valori pianificati, correggi se serve'}</div></div>
+      ${fields.map(f => html`<div key=${f.l} style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:800">${f.l}</span><div style="display:flex;gap:4px"><button onClick=${f.bigDec} aria-label=${`${f.l}: meno ${f.bigL}`} style=${small}>−${f.bigL}</button><button onClick=${f.bigInc} aria-label=${`${f.l}: più ${f.bigL}`} style=${small}>+${f.bigL}</button></div></div>
+        <div style="display:flex;align-items:center;gap:4px;background:var(--c-s2);border-radius:12px"><button class="key" onClick=${f.dec} aria-label=${`${f.l}: meno`} style="width:52px;height:52px;display:grid;place-items:center;border-radius:12px"><i class="ph-light ph-minus" style="font-size:20px"></i></button><span aria-live="polite" style="min-width:96px;text-align:center;font-size:1.375rem;font-weight:900;font-variant-numeric:tabular-nums">${f.v}</span><button class="key" onClick=${f.inc} aria-label=${`${f.l}: più`} style="width:52px;height:52px;display:grid;place-items:center;border-radius:12px"><i class="ph-light ph-plus" style="font-size:20px"></i></button></div>
+      </div>`)}
+      ${pace ? html`<div style="font-size:.8125rem;color:var(--c-fg3);font-variant-numeric:tabular-nums">${pace}</div>` : null}
+      <div><div style="font-weight:800;margin-bottom:8px">RPE della seduta</div><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px">${rpe.map(n => html`<button key=${n} onClick=${() => setLog(() => ({ e: n }))} aria-pressed=${L.e === n} aria-label=${`RPE ${n}`} style=${`height:44px;border-radius:10px;font-weight:900;font-variant-numeric:tabular-nums;background:${L.e === n ? 'var(--c-acc)' : 'var(--c-s2)'};color:${L.e === n ? 'var(--c-on-acc)' : 'var(--c-fg)'}`}>${n}</button>`)}</div><div style="font-size:.75rem;color:var(--c-fg3);margin-top:6px">1–2 molto facile · 5–6 impegnativo ma sostenibile · 9–10 massimale</div></div>
+      ${ui.cta('Salva', A.saveCardio)}
     `);
   };
 })();

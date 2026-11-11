@@ -1,0 +1,242 @@
+/* GreyTraining — values computed from the user's own logs (no seed data).
+   All functions are pure: they take the state (st) and return plain data for the screens.
+
+   Logs (GT.state.logs):
+   sessions [{ id, date, dayId, dayName, start, dur (min), sets { exId: [{ w, r, e, e1, pr }] }, vol, prs [exId], rate, notes {}, week }]
+   cardio   [{ id, date, sessionId, kind 'corsa'|'piscina', name, v (km | m), t (min), e (RPE) }]
+   weights  [{ date, kg }]               one per date, sorted by date
+   measures [{ date, vita, petto, braccio, coscia }]
+   food     { 'yyyy-mm-dd': { mealName: [{ n, q, grams, k, p, c, g }] } }
+   water    { 'yyyy-mm-dd': glasses }
+   ready    { 'yyyy-mm-dd': { sonno, energia, dolori } }                                     */
+(function () {
+  'use strict';
+  var GT = (window.GT = window.GT || {});
+
+  var logsOf = function (st) { return st.logs || {}; };
+  var sum = function (a, f) { return a.reduce(function (s, x) { return s + f(x); }, 0); };
+
+  // ---------- strength ----------
+  GT.e1rm = function (w, r) { return w > 0 && r > 0 ? w * (1 + r / 30) : 0; };
+
+  // Most recent saved session that contains this exercise
+  GT.lastPerformance = function (st, exId) {
+    var ss = logsOf(st).sessions || [];
+    for (var i = ss.length - 1; i >= 0; i--) {
+      var sets = ss[i].sets && ss[i].sets[exId];
+      if (sets && sets.length) return { date: ss[i].date, sets: sets };
+    }
+    return null;
+  };
+  // Best estimated 1RM ever (saved sessions), optionally plus sets of the running session
+  GT.bestE1RM = function (st, exId, extra) {
+    var best = 0, at = null;
+    (logsOf(st).sessions || []).forEach(function (s) {
+      (s.sets && s.sets[exId] || []).forEach(function (l) { var v = GT.e1rm(l.w, l.r); if (v > best) { best = v; at = { date: s.date, w: l.w, r: l.r }; } });
+    });
+    (extra || []).forEach(function (l) { var v = GT.e1rm(l.w, l.r); if (v > best) { best = v; at = { date: GT.todayISO(), w: l.w, r: l.r }; } });
+    return { value: best, set: at };
+  };
+  // e1RM per session (best set) over time, for charts
+  GT.e1rmSeries = function (st, exId) {
+    return (logsOf(st).sessions || []).map(function (s) {
+      var sets = s.sets && s.sets[exId];
+      if (!sets || !sets.length) return null;
+      return { date: s.date, v: Math.max.apply(null, sets.map(function (l) { return GT.e1rm(l.w, l.r); })) };
+    }).filter(Boolean);
+  };
+  // Exercises with at least one logged set, most-trained first
+  GT.trainedExercises = function (st) {
+    var count = {};
+    (logsOf(st).sessions || []).forEach(function (s) { Object.keys(s.sets || {}).forEach(function (id) { count[id] = (count[id] || 0) + (s.sets[id] || []).length; }); });
+    return Object.keys(count).sort(function (a, b) { return count[b] - count[a]; });
+  };
+  // Personal records: best e1RM per exercise
+  GT.personalRecords = function (st) {
+    return GT.trainedExercises(st).map(function (id) {
+      var b = GT.bestE1RM(st, id);
+      return b.set ? { id: id, name: (GT.EXI[id] || {}).n || id, e1: b.value, w: b.set.w, r: b.set.r, date: b.set.date } : null;
+    }).filter(Boolean);
+  };
+
+  // Load step for an exercise: dumbbells / kettlebells 2 kg, bodyweight 0 (add reps), else 2.5 kg
+  GT.loadStep = function (exId) {
+    var e = GT.EXI[exId];
+    if (!e || !e.req.length) return 0;
+    return e.req[0] === 'Manubri' || e.req[0] === 'Kettlebell' ? 2 : 2.5;
+  };
+
+  // The last n saved sessions that contain this exercise, newest first
+  GT.lastPerformances = function (st, exId, n) {
+    var ss = logsOf(st).sessions || [], out = [];
+    for (var i = ss.length - 1; i >= 0 && out.length < n; i--) {
+      var sets = ss[i].sets && ss[i].sets[exId];
+      if (sets && sets.length) out.push({ date: ss[i].date, sets: sets });
+    }
+    return out;
+  };
+
+  // Suggested first set for today: { w (kg or null = choose), r, why }
+  // Rule (handoff): +1 load step when the top of the rep range was reached on every planned set
+  // at RPE ≤ target in the last TWO sessions with this exercise at the same load.
+  GT.suggestion = function (st, planEx, targetRpe) {
+    var perf = GT.lastPerformances(st, planEx.id, 2), step = GT.loadStep(planEx.id);
+    var last = perf[0];
+    if (!last) return { w: step === 0 ? 0 : null, r: planEx.hi, why: step === 0 ? 'Prima volta: fermati 2–3 ripetizioni prima del cedimento.' : 'Prima volta: scegli un carico che chiudi a RPE ' + GT.fmt(targetRpe) + '.' };
+    var topOf = function (sets) { return sets.reduce(function (a, b) { return (b.w > a.w || (b.w === a.w && b.r > a.r)) ? b : a; }); };
+    var closed = function (p) { return p.sets.length >= planEx.sets && p.sets.every(function (l) { return l.r >= planEx.hi && (l.e || 10) <= targetRpe + 0.01; }); };
+    var top = topOf(last.sets);
+    var twice = perf.length === 2 && closed(perf[0]) && closed(perf[1]) && topOf(perf[1].sets).w === top.w;
+    if (twice && step > 0) return { w: top.w + step, r: planEx.lo, why: 'Range chiuso in alto a RPE ≤ ' + GT.fmt(targetRpe) + ' per due sessioni: +' + GT.fmt(step) + ' kg.' };
+    if (twice && step === 0) return { w: 0, r: Math.min(planEx.hi + 2, top.r + 1), why: 'Range chiuso per due sessioni: +1 ripetizione.' };
+    if (closed(last)) return { w: top.w, r: planEx.hi, why: 'Range chiuso in alto: conferma lo stesso carico, poi si sale.' };
+    return { w: top.w, r: Math.min(planEx.hi, top.r + 1), why: 'Stesso carico, punta a una ripetizione in più.' };
+  };
+
+  // ---------- weekly volume ----------
+  // Hard sets per muscle group in the week starting at mondayISO (RPE ≥ 7 or not recorded)
+  GT.weeklySets = function (st, mondayISO) {
+    var end = GT.addDays(mondayISO, 6), out = {};
+    GT.MUSCLES.forEach(function (m) { out[m.k] = 0; });
+    (logsOf(st).sessions || []).filter(function (s) { return s.date >= mondayISO && s.date <= end; }).forEach(function (s) {
+      Object.keys(s.sets || {}).forEach(function (id) {
+        var e = GT.EXI[id]; if (!e) return;
+        var hard = (s.sets[id] || []).filter(function (l) { return !l.e || l.e >= 7; }).length;
+        Object.keys(e.mg).forEach(function (k) { out[k] = (out[k] || 0) + hard * e.mg[k]; });
+      });
+    });
+    Object.keys(out).forEach(function (k) { out[k] = Math.round(out[k] * 10) / 10; });
+    return out;
+  };
+  // Sets per muscle group the plan schedules in one normal week
+  GT.plannedSets = function (plan) {
+    var out = {};
+    GT.MUSCLES.forEach(function (m) { out[m.k] = 0; });
+    if (!plan) return out;
+    plan.week.forEach(function (d) {
+      d.items.filter(function (it) { return it.type === 'gym'; }).forEach(function (it) {
+        var day = GT.findDay(plan, it.id); if (!day) return;
+        day.ex.forEach(function (x) { var e = GT.EXI[x.id]; if (!e) return; Object.keys(e.mg).forEach(function (k) { out[k] += x.sets * e.mg[k]; }); });
+      });
+    });
+    Object.keys(out).forEach(function (k) { out[k] = Math.round(out[k] * 10) / 10; });
+    return out;
+  };
+
+  // ---------- calendar ----------
+  // What the plan schedules on a date, and whether each item is done
+  GT.dayPlan = function (st, dateISO) {
+    var plan = st.plan; if (!plan) return { items: [], rest: true };
+    var wd = GT.weekday(dateISO), slot = plan.week[wd] || { items: [] };
+    var items = slot.items.map(function (it) {
+      if (it.type === 'gym') {
+        var day = GT.findDay(plan, it.id);
+        var done = (logsOf(st).sessions || []).filter(function (s) { return s.date === dateISO && s.dayId === it.id; })[0] || null;
+        return { type: 'gym', id: it.id, day: day, done: done };
+      }
+      var c = GT.findCardio(plan, it.id);
+      var log = (logsOf(st).cardio || []).filter(function (l) { return l.date === dateISO && l.sessionId === it.id; })[0] || null;
+      return { type: it.type, id: it.id, cardio: c, done: log };
+    }).filter(function (x) { return x.day || x.cardio; });
+    return { items: items, rest: !items.length };
+  };
+  // Any gym session saved on a date (planned or not)
+  GT.sessionsOn = function (st, dateISO) { return (logsOf(st).sessions || []).filter(function (s) { return s.date === dateISO; }); };
+
+  // ---------- readiness ----------
+  GT.readinessOf = function (st, dateISO) {
+    var r = (logsOf(st).ready || {})[dateISO || GT.todayISO()];
+    if (!r || !r.sonno || !r.energia || !r.dolori) return null;
+    var score = Math.round((r.sonno + r.energia + r.dolori - 3) / 12 * 100);
+    return { score: score, label: score >= 75 ? 'Pronto per spingere' : score >= 55 ? 'Nella media' : 'Recupero ridotto', values: r };
+  };
+
+  // ---------- nutrition ----------
+  GT.foodDay = function (st, dateISO) {
+    var meals = GT.mealsFor(st.profile), day = (logsOf(st).food || {})[dateISO] || {};
+    var out = meals.map(function (m) { var it = day[m] || []; return { name: m, items: it, k: sum(it, function (f) { return f.k; }) }; });
+    var all = [].concat.apply([], out.map(function (m) { return m.items; }));
+    return { meals: out, tot: { k: sum(all, function (f) { return f.k; }), p: sum(all, function (f) { return f.p; }), c: sum(all, function (f) { return f.c; }), g: sum(all, function (f) { return f.g; }) }, logged: all.length > 0 };
+  };
+  // Recently logged foods (newest first, unique by name+quantity), for quick add
+  GT.recentFoods = function (st, n) {
+    var food = logsOf(st).food || {}, seen = {}, out = [];
+    Object.keys(food).sort().reverse().forEach(function (d) {
+      Object.keys(food[d]).forEach(function (m) { (food[d][m] || []).slice().reverse().forEach(function (f) { var key = f.n + '|' + f.q; if (!seen[key]) { seen[key] = 1; out.push(f); } }); });
+    });
+    return out.slice(0, n || 8);
+  };
+  // Last 7 days ending today: kcal as % of target, only for days with something logged
+  GT.adherence = function (st, endISO) {
+    var end = endISO || GT.todayISO(), t = st.targets;
+    return [6, 5, 4, 3, 2, 1, 0].map(function (back) {
+      var d = GT.addDays(end, -back), f = GT.foodDay(st, d);
+      return { date: d, letter: GT.DAYS_LETTER[GT.weekday(d)], logged: f.logged, pct: t && f.logged ? Math.round(f.tot.k / t.k * 100) : null, prot: f.tot.p };
+    });
+  };
+
+  // ---------- body ----------
+  GT.weightStats = function (st, days) {
+    var all = (logsOf(st).weights || []).slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    if (!all.length) return { all: all, series: [], avg7: null, delta: null, last: null };
+    var lastDate = all[all.length - 1].date;
+    var from = days ? GT.addDays(GT.todayISO(), -days) : all[0].date;
+    var series = all.filter(function (w) { return w.date >= from; });
+    var last7 = all.filter(function (w) { return w.date > GT.addDays(lastDate, -7); });
+    var avg7 = sum(last7, function (w) { return w.kg; }) / last7.length;
+    return { all: all, series: series, avg7: avg7, last: all[all.length - 1], delta: series.length > 1 ? series[series.length - 1].kg - series[0].kg : null };
+  };
+
+  // ---------- weekly review and coach actions ----------
+  GT.weekReview = function (st, mondayISO) {
+    var end = GT.addDays(mondayISO, 6), plan = st.plan;
+    var planned = 0;
+    if (plan) plan.week.forEach(function (d) { planned += d.items.length; });
+    var gym = (logsOf(st).sessions || []).filter(function (s) { return s.date >= mondayISO && s.date <= end; });
+    var cardio = (logsOf(st).cardio || []).filter(function (s) { return s.date >= mondayISO && s.date <= end; });
+    var sets = GT.weeklySets(st, mondayISO), hard = 0;
+    Object.keys(sets).forEach(function (k) { hard += sets[k]; });
+    var adh = GT.adherence(st, end).filter(function (a) { return a.logged; });
+    var inRange = adh.filter(function (a) { return a.pct >= 90 && a.pct <= 110; }).length;
+    var w = (logsOf(st).weights || []).filter(function (x) { return x.date >= GT.addDays(mondayISO, -7) && x.date <= end; });
+    return {
+      done: gym.length + cardio.length, planned: planned, gym: gym.length, cardio: cardio.length,
+      hardSets: Math.round(hard), dietDays: adh.length, dietInRange: inRange,
+      weightDelta: w.length > 1 ? w[w.length - 1].kg - w[0].kg : null
+    };
+  };
+
+  // Actions the coach proposes, from real data only. Each: { id, icon, title, body, cta, kind, data }
+  GT.coachActions = function (st) {
+    var out = [], plan = st.plan, today = GT.todayISO();
+    if (!plan || !st.profile) return out;
+    var cw = GT.cycleWeek(plan, today);
+    // 1. Lifts ready for more load
+    plan.days.forEach(function (day) {
+      day.ex.forEach(function (x) {
+        var t = GT.targetFor(plan, x, today), s = GT.suggestion(st, x, t.rpe);
+        if (/per due sessioni/.test(s.why) && s.w) {
+          out.push({ id: 'load-' + x.id, icon: 'ph-light ph-trend-up', title: 'Aumenta il carico · ' + GT.EXI[x.id].n, body: s.why + ' Prossima volta ' + GT.fmtKg(s.w) + ' kg × ' + s.r + '.', cta: 'Ok', kind: 'info' });
+        }
+      });
+    });
+    // 2. Muscles under the minimum effective volume in the plan
+    // (at most the two furthest below their minimum, so the list stays short)
+    var ps = GT.plannedSets(plan);
+    GT.MUSCLES.filter(function (m) { return ps[m.k] > 0 && ps[m.k] < m.mev; })
+      .sort(function (a, b) { return ps[a.k] / a.mev - ps[b.k] / b.mev; }).slice(0, 2)
+      .forEach(function (m) {
+        out.push({ id: 'vol-' + m.k, icon: 'ph-light ph-stack', title: 'Più volume: ' + m.n, body: 'Il piano prevede ' + GT.fmt(ps[m.k]) + ' serie a settimana, sotto il minimo efficace di ' + m.mev + '. Aggiungo 1 serie a un esercizio per ' + m.n.toLowerCase() + '.', cta: 'Aggiungi', kind: 'addSet', data: { muscle: m.k } });
+      });
+    // 3. Deload next week
+    if (cw.index === plan.deloadIndex - 1) out.push({ id: 'deload-' + cw.cycle, icon: 'ph-light ph-battery-medium', title: 'Scarico la prossima settimana', body: 'Settimana ' + (plan.deloadIndex + 1) + ': stessi esercizi, circa 40% di serie in meno, RPE 6. Consolida il lavoro delle ultime settimane.', cta: 'Ok', kind: 'info' });
+    // 4. Protein under target on most logged days
+    var adh = GT.adherence(st).filter(function (a) { return a.logged; });
+    var lowP = adh.filter(function (a) { return st.targets && a.prot < st.targets.p * 0.9; }).length;
+    if (adh.length >= 3 && lowP >= Math.ceil(adh.length / 2)) out.push({ id: 'prot-' + GT.mondayOf(today), icon: 'ph-light ph-egg', title: 'Proteine sotto target', body: lowP + ' giorni su ' + adh.length + ' sotto ' + st.targets.p + ' g. Aggiungi uno spuntino da 25–30 g (yogurt greco, whey, fiocchi di latte).', cta: 'Ok', kind: 'info' });
+    // 5. No weigh-in for a week
+    var ws = logsOf(st).weights || [];
+    if (!ws.length || ws[ws.length - 1].date < GT.addDays(today, -7)) out.push({ id: 'weigh-' + GT.mondayOf(today), icon: 'ph-light ph-scales', title: 'Registra il peso', body: 'Pesati al mattino, a digiuno, 2–3 volte a settimana: la media guida le calorie del piano.', cta: 'Registra', kind: 'weigh' });
+    return out.filter(function (a) { return !(st.coach && st.coach[a.id]); });
+  };
+})();
