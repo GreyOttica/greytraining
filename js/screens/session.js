@@ -89,6 +89,8 @@
       elapsed: GT.elapsed(s),
       exNum: exIdx + 1, exCount: s.order.length, exMuscle: muscle, exName: ex.n,
       exTargetLine: `${tg.sets} × ${tg.reps} · ${effTarget} · recupero ${mmss(tg.rest)}`,
+      // Notes that came with an imported program: superset, RIR floor, coach note
+      exPlanNote: [tg.superset ? `Superset ${tg.superset}` : '', tg.minRir != null ? `Mai sotto RIR ${tg.minRir}` : '', tg.note || ''].filter(Boolean).join(' · '),
       exLastDate: last ? GT.fmtDay(last.date) : '',
       exLast: last ? last.sets.map(setTxt).join('  ·  ') : 'Prima volta',
       exSuggest: sugTxt, exWhy: whyTxt,
@@ -161,6 +163,7 @@ ${sessA ? html`<div class="scroll" style="flex:1;overflow-y:auto;padding:12px 16
 <div style=${S.eyebrow}>Esercizio ${v.exNum} di ${v.exCount}${v.exMuscle ? ` · ${v.exMuscle}` : ''}</div>
 <h2 style="margin:4px 0 4px;font-size:1.625rem;font-weight:900;letter-spacing:-.02em;line-height:1.1">${v.exName}</h2>
 <div style="font-size:.875rem;color:var(--c-fg2);font-variant-numeric:tabular-nums">${v.exTargetLine}</div>
+${v.exPlanNote ? html`<div style="font-size:.8125rem;color:var(--c-acc-t);line-height:1.4;margin-top:4px">${v.exPlanNote}</div>` : null}
 <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
 <button onClick=${A.openExFromSession} style="height:40px;padding:0 14px;border-radius:999px;background:var(--c-s2);font-size:.8125rem;font-weight:800;display:flex;gap:6px;align-items:center"><i class="ph-light ph-play-circle" style="font-size:18px"></i>Video</button>
 <button onClick=${A.openExFromSession} style="height:40px;padding:0 14px;border-radius:999px;background:var(--c-s2);font-size:.8125rem;font-weight:800;display:flex;gap:6px;align-items:center"><i class="ph-light ph-swap" style="font-size:18px"></i>Alternative</button>
@@ -193,6 +196,7 @@ ${sessB ? html`<div class="scroll" style="flex:1;overflow-y:auto;padding:16px 20
 <div style=${S.eyebrow}>${v.exMuscle ? `${v.exMuscle} · ` : ''}${v.exNum}/${v.exCount}</div>
 <button onClick=${A.openExFromSession} aria-label=${`${v.exName}: tecnica, video e alternative`} style="font-size:1.375rem;font-weight:900;letter-spacing:-.01em;line-height:1.15;display:flex;align-items:center;gap:6px;text-align:center">${v.exName}<i class="ph-light ph-info" style="font-size:18px;color:var(--c-fg3)"></i></button>
 <div style="font-size:.8125rem;color:var(--c-fg2);font-variant-numeric:tabular-nums">${v.exTargetLine}</div>
+${v.exPlanNote ? html`<div style="font-size:.75rem;color:var(--c-acc-t);line-height:1.4;max-width:320px">${v.exPlanNote}</div>` : null}
 <div style="display:flex;gap:8px;margin:14px 0 4px;flex-wrap:wrap;justify-content:center">${v.setDots.map(dt => html`<span key=${dt.n} style=${`width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font-size:.875rem;font-weight:900;background:${dt.bg};color:${dt.fg};border:1.5px solid ${dt.bd}`}>${dt.n}</span>`)}</div>
 <div style="font-size:.8125rem;color:var(--c-fg3)">${v.setLabel}</div>
 <div style="display:flex;align-items:flex-end;gap:12px;margin-top:10px">

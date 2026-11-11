@@ -362,6 +362,11 @@
 
       <div style=${eyebrowSec}>Dati</div>
       <div style="background:var(--c-s1);border:1px solid var(--c-line);border-radius:12px;padding:4px 16px">
+        <button onClick=${() => GT.set({ overlay: null, tab: 'allen', disc: 'palestra', allenSub: 'scheda', allenView: 'import', imp: null, impErr: null })} style="display:flex;align-items:center;gap:12px;min-height:64px;width:100%;text-align:left;border-bottom:1px solid var(--c-line)">
+          <i class="ph-light ph-file-arrow-up" style="font-size:22px;flex:none"></i>
+          <div style="flex:1"><div style="font-weight:800">Importa una scheda</div><div style="font-size:.8125rem;color:var(--c-fg3)">Programma in JSON fatto con un'AI o un coach</div></div>
+          <i class="ph-light ph-caret-right" style="font-size:18px;color:var(--c-fg3)"></i>
+        </button>
         <a href="#" onClick=${exportClick} style="display:flex;align-items:center;gap:12px;min-height:64px;border-bottom:1px solid var(--c-line);color:var(--c-fg);text-decoration:none">
           <i class="ph-light ph-download-simple" style="font-size:22px;flex:none"></i>
           <div style="flex:1"><div style="font-weight:800">Esporta i miei dati</div><div style="font-size:.8125rem;color:var(--c-fg3)">File JSON con profilo, piano e registri</div></div>

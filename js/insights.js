@@ -82,13 +82,26 @@
   GT.suggestion = function (st, planEx, targetRpe) {
     var perf = GT.lastPerformances(st, planEx.id, 2), step = GT.loadStep(planEx.id);
     var last = perf[0];
-    if (!last) return { w: step === 0 ? 0 : null, r: planEx.hi, why: step === 0 ? 'Prima volta: fermati 2–3 ripetizioni prima del cedimento.' : 'Prima volta: scegli un carico che chiudi a RPE ' + GT.fmt(targetRpe) + '.' };
+    if (!last) return { w: step === 0 ? 0 : null, r: planEx.hi, why: step === 0 ? 'Prima volta: fermati 2–3 ripetizioni prima del cedimento.' : 'Prima volta: scegli un carico che chiudi a ' + (GT.effLabel ? GT.effLabel(targetRpe) : 'RPE ' + GT.fmt(targetRpe)) + '.' };
     var topOf = function (sets) { return sets.reduce(function (a, b) { return (b.w > a.w || (b.w === a.w && b.r > a.r)) ? b : a; }); };
-    var closed = function (p) { return p.sets.length >= planEx.sets && p.sets.every(function (l) { return l.r >= planEx.hi && (l.e || 10) <= targetRpe + 0.01; }); };
+    // Imported programs give RIR as a range (e.g. 2–3, target = mean 2.5): any value inside the range counts
+    var prog = st.plan && st.plan.progression, tol = prog ? 0.51 : 0.01;
+    var closed = function (p) { return p.sets.length >= planEx.sets && p.sets.every(function (l) { return l.r >= planEx.hi && (l.e || 10) <= targetRpe + tol; }); };
     var top = topOf(last.sets);
+    // An imported plan may bring its own rule, e.g. double progression after ONE session,
+    // with a percentage increase rounded to the load step.
+    if (prog && prog.type === 'double' && prog.sessions === 1) {
+      if (closed(last) && step > 0) {
+        var pct = ((prog.pct && (prog.pct[0] + prog.pct[1]) / 2) || 2.5) / 100;
+        var inc = Math.max(step, Math.round(top.w * pct / step) * step);
+        return { w: top.w + inc, r: planEx.lo, up: true, why: 'Tutte le serie al massimo del range: +' + GT.fmtKg(inc) + ' kg (doppia progressione della tua scheda).' };
+      }
+      if (closed(last)) return { w: 0, r: Math.min(planEx.hi + 2, top.r + 1), up: true, why: 'Tutte le serie al massimo del range: +1 ripetizione.' };
+      return { w: top.w, r: Math.min(planEx.hi, top.r + 1), why: 'Stesso carico finché chiudi tutte le serie a ' + planEx.hi + ' ripetizioni.' };
+    }
     var twice = perf.length === 2 && closed(perf[0]) && closed(perf[1]) && topOf(perf[1].sets).w === top.w;
-    if (twice && step > 0) return { w: top.w + step, r: planEx.lo, why: 'Range chiuso in alto a RPE ≤ ' + GT.fmt(targetRpe) + ' per due sessioni: +' + GT.fmt(step) + ' kg.' };
-    if (twice && step === 0) return { w: 0, r: Math.min(planEx.hi + 2, top.r + 1), why: 'Range chiuso per due sessioni: +1 ripetizione.' };
+    if (twice && step > 0) return { w: top.w + step, r: planEx.lo, up: true, why: 'Range chiuso in alto a RPE ≤ ' + GT.fmt(targetRpe) + ' per due sessioni: +' + GT.fmt(step) + ' kg.' };
+    if (twice && step === 0) return { w: 0, r: Math.min(planEx.hi + 2, top.r + 1), up: true, why: 'Range chiuso per due sessioni: +1 ripetizione.' };
     if (closed(last)) return { w: top.w, r: planEx.hi, why: 'Range chiuso in alto: conferma lo stesso carico, poi si sale.' };
     return { w: top.w, r: Math.min(planEx.hi, top.r + 1), why: 'Stesso carico, punta a una ripetizione in più.' };
   };
@@ -215,7 +228,7 @@
     plan.days.forEach(function (day) {
       day.ex.forEach(function (x) {
         var t = GT.targetFor(plan, x, today), s = GT.suggestion(st, x, t.rpe);
-        if (/per due sessioni/.test(s.why) && s.w) {
+        if (s.up && s.w) {
           out.push({ id: 'load-' + x.id, icon: 'ph-light ph-trend-up', title: 'Aumenta il carico · ' + GT.EXI[x.id].n, body: s.why + ' Prossima volta ' + GT.fmtKg(s.w) + ' kg × ' + s.r + '.', cta: 'Ok', kind: 'info' });
         }
       });

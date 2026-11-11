@@ -28,7 +28,7 @@
   var SCHEMA = 2;
 
   var PERSIST = ['primary', 'secondary', 'bgTone', 'theme', 'scale', 'effort',
-    'profile', 'targets', 'plan', 'logs', 'coach', 'chat', 'ob', 's', 'summary', 'rate', 'notify'];
+    'profile', 'targets', 'plan', 'prevPlan', 'logs', 'coach', 'chat', 'ob', 's', 'summary', 'rate', 'notify'];
 
   var emptyLogs = function () { return { sessions: [], cardio: [], weights: [], measures: [], food: {}, water: {}, ready: {} }; };
 
@@ -133,6 +133,8 @@
   };
 
   GT.state = load();
+  GT.registerCustom(GT.state.plan);
+  GT.registerCustom(GT.state.prevPlan);
   var renderQueued = false;
   GT.onRender = null; // set by app.js
   GT.render = function () {
@@ -143,6 +145,8 @@
   GT.set = function (patch) {
     var p = typeof patch === 'function' ? patch(GT.state) : patch;
     if (!p) return;
+    if (p.plan) GT.registerCustom(p.plan); // exercises that came with an imported plan
+    if (p.prevPlan) GT.registerCustom(p.prevPlan);
     GT.state = Object.assign({}, GT.state, p);
     GT.render();
     scheduleSave();
@@ -309,6 +313,26 @@
     GT.set({ profile: null, targets: null, plan: null, logs: emptyLogs(), coach: {}, chat: [], s: null, summary: null, ob: { step: 0, a: {} }, overlay: null, tab: 'oggi', allenView: null, nutriView: null });
   };
 
+  // ---------- imported plan ----------
+  // Replace the plan with one built by GT.importProgram. The current plan is kept in prevPlan
+  // so it can be restored; logs, targets and profile are untouched.
+  // opts.effort: 'RIR' | 'RPE' to switch how effort is shown (imported plans are often in RIR).
+  A.applyImportedPlan = function (plan, opts) {
+    var o = opts || {};
+    GT.set(function (st) {
+      var out = { plan: plan, prevPlan: st.plan && !(st.plan.source && st.plan.source.type === 'import' && st.prevPlan) ? st.plan : (st.prevPlan || st.plan), allenView: null, tab: 'allen', disc: 'palestra', allenSub: 'scheda' };
+      if (o.effort === 'RIR' || o.effort === 'RPE') out.effort = o.effort;
+      return out;
+    });
+    A.toast('set', 'Scheda importata', plan.split + ' · ' + plan.days.length + ' sedute');
+  };
+  // Go back to the plan that was active before the last import
+  A.restorePrevPlan = function () {
+    var st = GT.state; if (!st.prevPlan) return;
+    GT.set({ plan: st.prevPlan, prevPlan: null });
+    A.toast('set', 'Piano ripristinato', st.prevPlan.split || 'Piano precedente');
+  };
+
   // ---------- readiness ----------
   A.setReady = function (k, n) {
     var today = GT.todayISO();
@@ -356,7 +380,7 @@
     var day = GT.findDay(plan, dayId);
     if (!day || !day.ex.length) return;
     var tg = {};
-    day.ex.forEach(function (x) { var t = GT.targetFor(plan, x, today); tg[x.id] = { sets: t.sets, lo: x.lo, hi: x.hi, reps: x.reps, rpe: t.rpe, rest: x.rest }; });
+    day.ex.forEach(function (x) { var t = GT.targetFor(plan, x, today); tg[x.id] = { sets: t.sets, lo: x.lo, hi: x.hi, reps: x.reps, rpe: t.rpe, rest: x.rest, note: x.note || '', minRir: x.minRir != null ? x.minRir : null, superset: x.superset || null }; });
     var s = { start: Date.now(), date: today, dayId: day.id, dayName: day.name, order: day.ex.map(function (x) { return x.id; }), tg: tg, logs: {}, rest: null, notes: {}, showNote: false };
     GT.set({ s: A.prefill(s, 0), overlay: 'session', summary: null, pad: null });
   };
@@ -596,7 +620,10 @@
         esperienza: p.experience, giorni_palestra: p.gymDays, durata_seduta_min: p.sessionMin, attrezzatura: p.equipment, limitazioni: (p.limitations || []).map(function (l) { return l.k + (l.note ? ': ' + l.note : ''); }),
         corsa: p.runs ? p.run : null, nuoto: p.swims ? p.swim : null, attivita_quotidiana: p.activity, sonno_ore: p.sleepH, dieta: p.diet, allergie: p.allergies, pasti_al_giorno: p.mealsPerDay, scala_sforzo: st.effort },
       target_nutrizione: st.targets,
-      piano: plan ? { split: plan.split, settimana_ciclo: d.cycle.num + ' di ' + plan.cycleWeeks + (d.cycle.deload ? ' (scarico)' : ''),
+      piano: plan ? { split: plan.split, origine: plan.source ? 'scheda importata dall\'utente' : 'generato dall\'app', note_e_regole: plan.notes || null,
+        progressione: plan.progression ? plan.progression.rule : '+2,5 kg dopo due sedute con il range chiuso a RPE ≤ target',
+        settimane: plan.weeksSpec ? plan.weeksSpec.map(function (w, i) { return 'S' + (i + 1) + ' ' + w.type + ' RPE multi ' + w.rpeComp + ' / iso ' + w.rpeIso + (w.setsMult !== 1 ? ' serie x' + w.setsMult : ''); }) : null,
+        settimana_ciclo: d.cycle.num + ' di ' + plan.cycleWeeks + (d.cycle.deload ? ' (scarico)' : ''),
         giorni: plan.days.map(function (x) { return { nome: x.name, esercizi: x.ex.map(function (e) { return exName(e.id) + ' ' + e.sets + 'x' + e.reps; }) }; }),
         calendario: plan.week.map(function (w) { return GT.DAYS_SHORT[w.wd] + ': ' + (w.items.map(function (it) { return it.type === 'gym' ? (GT.findDay(plan, it.id) || {}).name : (GT.findCardio(plan, it.id) || {}).name; }).join(' + ') || 'riposo'); }),
         zone_corsa: plan.run ? plan.run.zones.map(function (z) { return z.z + ' ' + z.n + ' ' + z.label + '/km'; }) : null } : null,

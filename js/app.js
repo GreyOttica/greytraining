@@ -80,6 +80,7 @@
       ${st.allenView === 'exercise' ? screen('exDetail', st, d) : null}
       ${st.allenView === 'editor' ? screen('editor', st, d) : null}
       ${st.allenView === 'pick' ? screen('exPicker', st, d) : null}
+      ${st.allenView === 'import' ? screen('importPlan', st, d) : null}
       ${st.nutriView === 'scanner' ? screen('scanner', st, d) : null}
       ${st.nutriView === 'product' ? screen('product', st, d) : null}
       ${st.nutriView === 'manual' ? screen('manualFood', st, d) : null}

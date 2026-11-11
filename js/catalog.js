@@ -151,6 +151,14 @@
   GT.EXI = {};
   GT.CATALOG.forEach(function (e) { GT.EXI[e.id] = e; });
 
+  // Exercises that come with an imported plan (plan.custom: { id: entry }) are added to GT.EXI
+  // so every screen can show them; they do not appear in the library list (GT.CATALOG).
+  GT.registerCustom = function (plan) {
+    var c = plan && plan.custom;
+    if (!c) return;
+    Object.keys(c).forEach(function (id) { GT.EXI[id] = c[id]; });
+  };
+
   // Equipment label shown in lists: the first required item, or "Corpo libero"
   GT.eqLabel = function (e) { return e.req.length ? e.req[0] : 'Corpo libero'; };
   // Can this user do this exercise? (equipment owned, no limitation conflict, level)

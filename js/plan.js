@@ -327,11 +327,22 @@
     var idx = w % plan.cycleWeeks;
     return { index: idx, num: idx + 1, cycle: Math.floor(w / plan.cycleWeeks) + 1, deload: idx === plan.deloadIndex };
   };
-  // Target RPE for a planned exercise on a date (deload week: RPE 6 and fewer sets)
+  // Target RPE and sets for a planned exercise on a date.
+  // Generated plans: rpeWeeks + rpeOffset, deload = RPE 6 and ~60% of the sets.
+  // Imported plans may carry weeksSpec [{ rpeComp, rpeIso, setsMult }] per week (RPE = 10 − RIR)
+  // and per-exercise minRir (never closer to failure than that).
   GT.targetFor = function (plan, ex, dateISO) {
-    var cw = GT.cycleWeek(plan, dateISO);
-    var rpe = Math.min(9.5, plan.rpeWeeks[cw.index] + (cw.deload ? 0 : ex.rpeOffset || 0));
-    var sets = cw.deload ? Math.max(1, Math.round(ex.sets * 0.6)) : ex.sets;
+    var cw = GT.cycleWeek(plan, dateISO), rpe, sets;
+    var spec = plan.weeksSpec && plan.weeksSpec[cw.index];
+    if (spec) {
+      var comp = ex.comp != null ? ex.comp : !!(GT.EXI[ex.id] && GT.EXI[ex.id].comp);
+      rpe = comp ? spec.rpeComp : spec.rpeIso;
+      sets = Math.max(1, Math.round(ex.sets * (spec.setsMult || 1)));
+    } else {
+      rpe = Math.min(9.5, plan.rpeWeeks[cw.index] + (cw.deload ? 0 : ex.rpeOffset || 0));
+      sets = cw.deload ? Math.max(1, Math.round(ex.sets * 0.6)) : ex.sets;
+    }
+    if (ex.minRir != null) rpe = Math.min(rpe, 10 - ex.minRir);
     return { rpe: rpe, sets: sets, deload: cw.deload };
   };
   GT.findDay = function (plan, id) { return plan ? plan.days.filter(function (d) { return d.id === id; })[0] || null : null; };

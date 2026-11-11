@@ -116,16 +116,23 @@
   function scheda(st, d, w) {
     const plan = st.plan, cw = w.cycle;
     if (!plan.days.length) {
-      return emptyState('barbell', 'Nessun giorno di palestra nel piano',
-        'Nel questionario hai indicato 0 giorni di palestra. Aggiungili per avere una scheda con esercizi, serie e progressione dei carichi.', toQuestionnaire);
+      return html`${emptyState('barbell', 'Nessun giorno di palestra nel piano',
+        'Nel questionario hai indicato 0 giorni di palestra. Aggiungili per avere una scheda con esercizi, serie e progressione dei carichi.', toQuestionnaire)}${importRow(st)}`;
     }
     const left = plan.deloadIndex - cw.index;
     const sub = `${cw.cycle > 1 ? `Ciclo ${cw.cycle} · ` : ''}Inizio ${GT.fmtDay(plan.startDate)} · ${cw.deload ? 'questa settimana è di scarico'
       : left === 1 ? 'scarico la prossima settimana' : `scarico tra ${left} settimane`}`;
+    // Imported programs carry the file's RIR range per week (e.g. 2–3); show that instead of the mean
+    const effOf = (rpe, i) => {
+      const r = plan.weeksSpec && plan.weeksSpec[i] && plan.weeksSpec[i].rirComp;
+      if (!r || !r.length) return GT.effLabel(rpe);
+      const lo = Math.min(...r), hi = Math.max(...r), f = (a, b) => a === b ? GT.fmt(a) : `${GT.fmt(a)}–${GT.fmt(b)}`;
+      return st.effort === 'RIR' ? `RIR ${f(lo, hi)}` : `RPE ${f(10 - hi, 10 - lo)}`;
+    };
     const tiles = plan.rpeWeeks.map((rpe, i) => {
       const cur = i === cw.index, past = i < cw.index, dl = i === plan.deloadIndex;
       return {
-        w: 'S' + (i + 1), t: dl ? 'Scarico' : GT.effLabel(rpe),
+        w: 'S' + (i + 1), t: dl ? 'Scarico' : effOf(rpe, i),
         bg: cur ? 'var(--c-acc)' : past ? 'var(--c-s3)' : 'transparent',
         fg: cur ? 'var(--c-on-acc)' : past ? 'var(--c-fg)' : 'var(--c-fg2)',
         bd: `1px ${dl ? 'dashed' : 'solid'} ${cur ? 'var(--c-acc)' : past ? 'transparent' : 'var(--c-s3)'}`,
@@ -153,7 +160,7 @@
     return html`
       <div style=${S.card + ';padding:16px;display:flex;flex-direction:column;gap:14px'}>
         <div><div style="font-size:1.125rem;font-weight:900">${plan.split}</div><div style="font-size:.8125rem;color:var(--c-fg3);margin-top:2px">${sub}</div></div>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">
+        <div style=${`display:grid;grid-template-columns:repeat(${tiles.length},1fr);gap:${tiles.length > 5 ? 4 : 6}px`}>
           ${tiles.map(t => html`<div key=${t.w} aria-label=${t.aria} style=${`height:58px;border-radius:8px;padding:8px 6px;display:flex;flex-direction:column;justify-content:space-between;background:${t.bg};color:${t.fg};border:${t.bd};min-width:0`}><span style="font-size:.8125rem;font-weight:900">${t.w}</span><span style="font-size:.625rem;font-weight:700;letter-spacing:-.01em;white-space:nowrap">${t.t}</span></div>`)}
         </div>
       </div>
@@ -168,7 +175,27 @@
         : pending ? ui.cta(`Inizia ${pending.day.name}`, () => A.startSession(pending.id), { icon: 'ph-fill ph-play' })
         : doneRec ? html`<div style="height:52px;border-radius:12px;background:var(--c-s2);display:flex;align-items:center;justify-content:center;gap:8px;font-weight:800;font-variant-numeric:tabular-nums"><i class="ph-bold ph-check" style="font-size:16px;color:var(--c-sec)"></i>Completato · ${doneRec.dur} min · ${doneRec.vol > 0 ? `${GT.fk(doneRec.vol)} kg` : `${Object.keys(doneRec.sets || {}).reduce((a, k) => a + (doneRec.sets[k] || []).length, 0)} serie`}</div>`
         : nx ? html`<p style="margin:0;padding:0 4px;font-size:.8125rem;line-height:1.5;color:var(--c-fg3)">Oggi niente palestra. Prossima: ${GT.fmtShort(nx.date)} · ${nx.day.name}.</p>` : null}
+      ${planNotes(plan)}
+      ${importRow(st)}
     `;
+  }
+
+  // Notes and rules that came with an imported program
+  function planNotes(plan) {
+    if (!plan.notes || !plan.notes.length) return null;
+    return html`<div style=${S.card + ';padding:14px 16px;display:flex;flex-direction:column;gap:8px'}>
+      <div style=${S.eyebrow}>Note della scheda</div>
+      ${plan.notes.map((n, i) => html`<div key=${'pn' + i} style="display:flex;gap:10px;font-size:.8125rem;line-height:1.45;color:var(--c-fg2)"><i class="ph-light ph-note" style="font-size:16px;flex:none;margin-top:1px"></i><span>${n}</span></div>`)}
+    </div>`;
+  }
+
+  // "Importa scheda" + "Ripristina piano precedente"
+  function importRow(st) {
+    const btn = 'flex:1;height:48px;border-radius:12px;border:1px solid var(--c-s3);font-weight:800;font-size:.875rem;display:flex;align-items:center;justify-content:center;gap:8px';
+    return html`<div style="display:flex;gap:8px">
+      <button onClick=${() => GT.set({ allenView: 'import', imp: null, impErr: null })} style=${btn}><i class="ph-light ph-file-arrow-up" style="font-size:18px"></i>Importa scheda</button>
+      ${st.prevPlan ? html`<button onClick=${() => A.restorePrevPlan()} style=${btn}><i class="ph-light ph-arrow-counter-clockwise" style="font-size:18px"></i>Piano precedente</button>` : null}
+    </div>`;
   }
 
   // ---------- Palestra · Volume ----------
