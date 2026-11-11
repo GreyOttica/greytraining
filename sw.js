@@ -2,7 +2,7 @@
    App files are precached and fetched network-first, so updates arrive on the next launch.
    Fonts, icons and libraries from the CDNs are cached on first use.
    Bump VERSION when the file list below changes. */
-var VERSION = 'gt-v6';
+var VERSION = 'gt-v7';
 var APP = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/data.js', './js/catalog.js', './js/foods.js', './js/plan.js', './js/insights.js', './js/importer.js',

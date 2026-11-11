@@ -51,6 +51,8 @@
     </div>`;
   }
   const toQuestionnaire = { label: 'Aggiungi dal Profilo', go: () => A.editQuestionnaire(), icon: 'ph-light ph-user-circle' };
+  // (on an imported plan the questionnaire adds runs or swims to it, on free days)
+  const isImport = plan => !!(plan && plan.source && plan.source.type === 'import');
 
   function doneBadge() {
     return html`<span style="font-size:.75rem;font-weight:800;display:flex;gap:4px;align-items:center;color:var(--c-sec)"><i class="ph-bold ph-check" style="font-size:13px"></i>Fatto</span>`;
@@ -119,9 +121,11 @@
       return html`${emptyState('barbell', 'Nessun giorno di palestra nel piano',
         'Nel questionario hai indicato 0 giorni di palestra. Aggiungili per avere una scheda con esercizi, serie e progressione dei carichi.', toQuestionnaire)}${importRow(st)}`;
     }
-    const left = plan.deloadIndex - cw.index;
-    const sub = `${cw.cycle > 1 ? `Ciclo ${cw.cycle} · ` : ''}Inizio ${GT.fmtDay(plan.startDate)} · ${cw.deload ? 'questa settimana è di scarico'
-      : left === 1 ? 'scarico la prossima settimana' : `scarico tra ${left} settimane`}`;
+    // (weeks before week 1 starts count too, when the program starts next Monday)
+    const pre = Math.max(0, Math.round(GT.daysBetween(GT.mondayOf(w.today), plan.startDate) / 7));
+    const nd = GT.nextDeload(plan, cw.index + 1), left = nd < 0 ? -1 : nd - cw.index + pre;
+    const sub = `${cw.cycle > 1 ? `Ciclo ${cw.cycle} · ` : ''}${GT.daysBetween(GT.todayISO(), plan.startDate) > 0 ? 'Settimana 1 da' : 'Inizio'} ${GT.fmtDay(plan.startDate)}${cw.deload ? ' · questa settimana è di scarico'
+      : left === 1 ? ' · scarico la prossima settimana' : left > 1 ? ` · scarico tra ${left} settimane` : GT.nextDeload(plan, 0) < 0 ? ' · nessuna settimana di scarico' : ''}`;
     // Imported programs carry the file's RIR range per week (e.g. 2–3); show that instead of the mean
     const effOf = (rpe, i) => {
       const r = plan.weeksSpec && plan.weeksSpec[i] && plan.weeksSpec[i].rirComp;
@@ -130,7 +134,7 @@
       return st.effort === 'RIR' ? `RIR ${f(lo, hi)}` : `RPE ${f(10 - hi, 10 - lo)}`;
     };
     const tiles = plan.rpeWeeks.map((rpe, i) => {
-      const cur = i === cw.index, past = i < cw.index, dl = i === plan.deloadIndex;
+      const cur = i === cw.index, past = i < cw.index, dl = GT.isDeloadWeek(plan, i);
       return {
         w: 'S' + (i + 1), t: dl ? 'Scarico' : effOf(rpe, i),
         bg: cur ? 'var(--c-acc)' : past ? 'var(--c-s3)' : 'transparent',
@@ -185,16 +189,26 @@
     if (!plan.notes || !plan.notes.length) return null;
     return html`<div style=${S.card + ';padding:14px 16px;display:flex;flex-direction:column;gap:8px'}>
       <div style=${S.eyebrow}>Note della scheda</div>
-      ${plan.notes.map((n, i) => html`<div key=${'pn' + i} style="display:flex;gap:10px;font-size:.8125rem;line-height:1.45;color:var(--c-fg2)"><i class="ph-light ph-note" style="font-size:16px;flex:none;margin-top:1px"></i><span>${n}</span></div>`)}
+      ${plan.notes.map((n, i) => html`<div key=${'pn' + i} style="display:flex;gap:10px;font-size:.8125rem;line-height:1.45;color:var(--c-fg2)"><i class="ph-light ph-note" style="font-size:16px;flex:none;margin-top:1px"></i><span>${String(n)}</span></div>`)}
     </div>`;
   }
 
   // "Importa scheda" + "Ripristina piano precedente"
   function importRow(st) {
     const btn = 'flex:1;height:48px;border-radius:12px;border:1px solid var(--c-s3);font-weight:800;font-size:.875rem;display:flex;align-items:center;justify-content:center;gap:8px';
+    if (st.restoreAsk && st.prevPlan) {
+      return html`<div role="alert" style=${S.card + ';padding:14px 16px;display:flex;flex-direction:column;gap:10px'}>
+        <div style="font-weight:800">Passare a «${String(st.prevPlan.split || 'Piano precedente')}»?</div>
+        <div style="font-size:.8125rem;color:var(--c-fg3);line-height:1.45">La scheda attuale diventa il piano precedente: puoi tornarci allo stesso modo. Registri e carichi restano.</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <button onClick=${() => GT.set({ restoreAsk: false })} style="height:44px;border-radius:10px;border:1px solid var(--c-s3);font-weight:800">Annulla</button>
+          <button class="press" onClick=${() => A.restorePrevPlan()} style="height:44px;border-radius:10px;background:var(--c-acc);color:var(--c-on-acc);font-weight:900">Passa</button>
+        </div>
+      </div>`;
+    }
     return html`<div style="display:flex;gap:8px">
       <button onClick=${() => GT.set({ allenView: 'import', imp: null, impErr: null })} style=${btn}><i class="ph-light ph-file-arrow-up" style="font-size:18px"></i>Importa scheda</button>
-      ${st.prevPlan ? html`<button onClick=${() => A.restorePrevPlan()} style=${btn}><i class="ph-light ph-arrow-counter-clockwise" style="font-size:18px"></i>Piano precedente</button>` : null}
+      ${st.prevPlan ? html`<button onClick=${() => GT.set({ restoreAsk: true })} style=${btn}><i class="ph-light ph-arrows-left-right" style="font-size:18px"></i>Piano precedente</button>` : null}
     </div>`;
   }
 
@@ -222,7 +236,7 @@
     });
     const under = GT.MUSCLES.filter(m => m.mev > 0 && (planned[m.k] || 0) < m.mev).map(m => m.n.toLowerCase());
     const note = 'Range efficace: tra il volume minimo per progredire e il massimo recuperabile. La tacca indica le serie che il piano prevede in una settimana normale.'
-      + (w.cycle.deload ? ' Questa è la settimana di scarico: circa 40% di serie in meno, stare sotto il minimo è previsto.' : '')
+      + (w.cycle.deload ? ' Questa è la settimana di scarico (' + GT.deloadText(plan, w.cycle.index).replace(/^stessi esercizi, /, '').replace(/\.$/, '') + '): stare sotto il minimo è previsto.' : '')
       + (under.length ? ` Nel piano sono sotto il minimo: ${joinIt(under)}. Aggiungi serie o esercizi dalla Scheda; il Coach propone le serie mancanti per i muscoli già allenati.` : '');
     const todayGym = d.todayPlan.items.filter(x => x.type === 'gym' && !x.done)[0];
 
@@ -316,7 +330,7 @@
   function corsa(st, w) {
     const plan = st.plan, run = plan.run;
     if (!run) {
-      return emptyState('person-simple-run', 'Non hai inserito la corsa nel questionario',
+      return emptyState('person-simple-run', isImport(plan) ? 'La scheda importata non ha corse' : 'Non hai inserito la corsa nel questionario',
         'Indica quante volte corri e quanti km fai a settimana (e, se ce l\'hai, un tempo sui 5 o 10 km): calcolo zone di passo e sedute adatte alla palestra.', toQuestionnaire);
     }
     const logs = cardioBetween(st, w.monday, w.sunday, 'corsa');
@@ -365,7 +379,7 @@
   function piscina(st, w) {
     const plan = st.plan, swim = plan.swim;
     if (!swim) {
-      return emptyState('swimming-pool', 'Non hai inserito il nuoto nel questionario',
+      return emptyState('swimming-pool', isImport(plan) ? 'La scheda importata non ha il nuoto' : 'Non hai inserito il nuoto nel questionario',
         'Il nuoto qui serve da defaticamento: sedute aerobiche leggere tra palestra e corsa. Indica quante volte vai in piscina e lo inserisco nel calendario.', toQuestionnaire);
     }
     const monthStart = w.today.slice(0, 8) + '01';

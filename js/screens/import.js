@@ -22,9 +22,15 @@
     try {
       var json = GT.parseProgramText(text);
       var res = GT.importProgram(json, GT.state);
-      var usesRir = Array.isArray(json.weeks) && json.weeks.some(function (w) { return w && w.rir; });
-      GT.set({ imp: { plan: res.plan, report: res.report, effort: usesRir ? 'RIR' : GT.state.effort, name: name || null }, impErr: null });
-    } catch (e) { setErr(e && e.message ? e.message : 'Non riesco a leggere il file.'); }
+      // A program written in RIR is shown in RIR (the user can switch in the preview)
+      var usesRir = /"\s*rir/i.test(String(text)) || /\bRIR\b/.test(String(text));
+      var so = GT.importStartOptions(res.plan, GT.state);
+      GT.set({ imp: { plan: res.plan, report: res.report, effort: usesRir ? 'RIR' : GT.state.effort, name: name || null, start: so.def }, impErr: null });
+    } catch (e) {
+      // Never show a raw English TypeError: explain and point to the prompt
+      var msg = e && e.message && /[àèéìòù]|Il |Non |Formato/.test(e.message) ? e.message : 'Non riesco a leggere questa scheda (' + (e && e.message ? e.message : 'errore') + '). Prova a farla rigenerare all\'AI con "Copia la richiesta per l\'AI".';
+      setErr(msg);
+    }
   }
   function onFile(e) {
     var f = e.target.files && e.target.files[0];
@@ -38,10 +44,14 @@
   }
   function copyPrompt() {
     var done = function () { A.toast('set', 'Richiesta copiata', 'Incollala nella chat della tua AI'); };
-    try { navigator.clipboard.writeText(PROMPT).then(done, function () { A.toast('info', 'Copia non riuscita', 'Seleziona il testo a mano'); }); }
-    catch (e) { A.toast('info', 'Copia non riuscita', 'Seleziona il testo a mano'); }
+    // No clipboard access (old iOS, blocked permission): show the text to copy by hand
+    var manual = function () { GT.set({ impPrompt: true }); A.toast('info', 'Copia a mano', 'Tieni premuto sul testo e scegli Copia'); };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(PROMPT).then(done, manual);
+      else manual();
+    } catch (e) { manual(); }
   }
-  var close = function () { GT.set({ allenView: null, imp: null, impErr: null }); };
+  var close = function () { GT.set({ allenView: null, imp: null, impErr: null, impPrompt: false }); };
   // Effort for a week: the file's own RIR range when there is one (e.g. "RIR 2–3"), else the mean
   var eff = function (rpe, mode, rir) {
     var r = rir && rir.length ? rir.slice().sort(function (a, b) { return a - b; }) : null;
@@ -64,7 +74,7 @@
       </label>
       <div style=${S.card + ';padding:14px 16px;display:flex;flex-direction:column;gap:10px'}>
         <div style=${S.eyebrow}>Oppure incolla il testo</div>
-        <textarea ref=${function (el) { pasteEl = el; }} rows="6" placeholder='{ "schemaVersion": 1, "program": { … } }' aria-label="Testo della scheda" style="border-radius:12px;border:1px solid var(--c-s3);background:var(--c-s2);padding:12px;font-size:.875rem;line-height:1.4;outline:0;resize:vertical;font-family:ui-monospace,Menlo,Consolas,monospace;min-height:120px"></textarea>
+        <textarea ref=${function (el) { pasteEl = el; }} rows="6" placeholder='{ "schemaVersion": 1, "program": { … } }' aria-label="Testo della scheda" style="border-radius:12px;border:1px solid var(--c-s3);background:var(--c-s2);padding:12px;font-size:16px;line-height:1.4;outline:0;resize:vertical;font-family:ui-monospace,Menlo,Consolas,monospace;min-height:120px;color:var(--c-fg)"></textarea>
         <button onClick=${function () { analyze(pasteEl ? pasteEl.value : ''); }} style="height:48px;border-radius:10px;background:var(--c-s2);font-weight:800;display:flex;align-items:center;justify-content:center;gap:8px"><i class="ph-light ph-magnifying-glass" style="font-size:18px"></i>Analizza</button>
       </div>
       ${st.impErr ? html`<div role="alert" style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:12px;background:var(--c-s2);font-size:.875rem;line-height:1.45"><i class="ph-light ph-warning-circle" style="font-size:20px;flex:none;color:var(--c-acc-t)"></i><span>${st.impErr}</span></div>` : null}
@@ -72,6 +82,7 @@
         <div style="display:flex;gap:10px;align-items:flex-start"><i class="ph-light ph-chat-circle-dots" style="font-size:22px;color:var(--c-fg3);flex:none"></i>
           <div><div style="font-weight:800">Non hai ancora un JSON?</div><div style="font-size:.8125rem;color:var(--c-fg3);line-height:1.45;margin-top:4px">Copia questa richiesta, incollala in ChatGPT, Gemini o Claude insieme alle tue indicazioni, poi salva la risposta come file .json o incollala qui sopra.</div></div></div>
         <button onClick=${copyPrompt} style="height:44px;border-radius:10px;border:1px solid var(--c-s3);font-weight:800;font-size:.875rem;display:flex;align-items:center;justify-content:center;gap:8px"><i class="ph-light ph-copy" style="font-size:18px"></i>Copia la richiesta per l'AI</button>
+        ${st.impPrompt ? html`<textarea readonly value=${PROMPT} aria-label="Richiesta per l'AI" style="min-height:200px;border-radius:10px;border:1px solid var(--c-s3);background:var(--c-s2);padding:10px;font-size:16px;line-height:1.35;font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--c-fg);-webkit-user-select:text;user-select:text"></textarea>` : null}
       </div>`;
   }
 
@@ -90,14 +101,24 @@
       return { wd: w.wd, items: items };
     });
     var totalSets = plan.days.reduce(function (a, d) { return a + d.ex.reduce(function (b, x) { return b + x.sets; }, 0); }, 0);
+    var dls = plan.weeksSpec.map(function (w, i) { return w.deload ? 'S' + (i + 1) : null; }).filter(Boolean);
+    var so = GT.importStartOptions(plan, st), start = imp.start || so.def;
 
     return html`
       <div>
         <div style=${S.eyebrow}>Anteprima${imp.name ? ' · ' + imp.name : ''}</div>
-        <h1 style=${S.h1 + ';font-size:1.75rem'}>${plan.split}</h1>
-        <div style="font-size:.875rem;color:var(--c-fg3);margin-top:4px">${plan.days.length} sedute · ${totalSets} serie a settimana · ciclo di ${plan.cycleWeeks} settimane${plan.deloadIndex < plan.cycleWeeks ? ' · scarico S' + (plan.deloadIndex + 1) : ''}</div>
+        <h1 style=${S.h1 + ';font-size:1.75rem'}>${String(plan.split)}</h1>
+        <div style="font-size:.875rem;color:var(--c-fg3);margin-top:4px">${plan.days.length} sedute · ${totalSets} serie a settimana · ciclo di ${plan.cycleWeeks} settimane · ${dls.length ? 'scarico ' + dls.join(', ') : 'nessuno scarico'}</div>
       </div>
-      ${plan.notes.length ? html`<div style=${S.card + ';padding:14px 16px;display:flex;flex-direction:column;gap:8px'}>${plan.notes.map(function (n, i) { return html`<div key=${'n' + i} style="display:flex;gap:10px;font-size:.875rem;line-height:1.45"><i class="ph-light ph-note" style="font-size:18px;flex:none;color:var(--c-fg3);margin-top:1px"></i><span>${n}</span></div>`; })}</div>` : null}
+      ${st.s ? html`<div role="note" style="display:flex;gap:10px;padding:12px 14px;border-radius:12px;background:var(--c-s2);font-size:.8125rem;line-height:1.45"><i class="ph-light ph-timer" style="font-size:18px;flex:none"></i><span>Hai un allenamento in corso (${st.s.dayName}): continua con i suoi esercizi e si salva normalmente. La nuova scheda vale dalla prossima seduta.</span></div>` : null}
+      ${plan.notes.length ? html`<div style=${S.card + ';padding:14px 16px;display:flex;flex-direction:column;gap:8px'}>${plan.notes.map(function (n, i) { return html`<div key=${'n' + i} style="display:flex;gap:10px;font-size:.875rem;line-height:1.45"><i class="ph-light ph-note" style="font-size:18px;flex:none;color:var(--c-fg3);margin-top:1px"></i><span>${String(n)}</span></div>`; })}</div>` : null}
+
+      <div style=${S.card + ';padding:14px 16px;display:flex;flex-direction:column;gap:8px'} role="radiogroup" aria-label="Quando inizia la settimana 1">
+        <div style=${S.eyebrow}>Quando inizi</div>
+        ${so.options.map(function (o) { var a = start === o.k; return html`<button key=${o.k} role="radio" aria-checked=${a} onClick=${function () { GT.set({ imp: Object.assign({}, imp, { start: o.k }) }); }} style=${'min-height:44px;display:flex;align-items:center;gap:10px;text-align:left;font-size:.9375rem;font-weight:' + (a ? 800 : 600)}>
+          <span style=${'flex:none;width:20px;height:20px;border-radius:50%;border:2px solid ' + (a ? 'var(--c-acc)' : 'var(--c-s3)') + ';display:grid;place-items:center'}>${a ? html`<span style="width:10px;height:10px;border-radius:50%;background:var(--c-acc)"></span>` : null}</span>${o.label}</button>`; })}
+        <div style="font-size:.75rem;color:var(--c-fg3);line-height:1.4">Prima della settimana 1 il calendario mostra già le sedute, con i target della settimana 1.</div>
+      </div>
 
       <div style=${S.card + ';padding:14px 16px;display:flex;flex-direction:column;gap:12px'}>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style=${S.eyebrow}>Settimane</span>
@@ -107,7 +128,7 @@
             <span style="font-weight:900">S${i + 1}</span><span style="text-transform:capitalize;color:var(--c-fg2)">${w.type}${w.setsMult !== 1 ? ' · serie ×' + GT.fmt(w.setsMult) : ''}</span>
             <span class="num" style="font-weight:800;white-space:nowrap">multi ${eff(w.rpeComp, mode, w.rirComp)} · iso ${eff(w.rpeIso, mode, w.rirIso)}</span></div>`;
         })}</div>
-        ${plan.progression ? html`<div style="font-size:.8125rem;color:var(--c-fg2);line-height:1.45">Progressione: ${plan.progression.rule} (+${GT.fmt(plan.progression.pct[0])}–${GT.fmt(plan.progression.pct[1])}% arrotondato al disco disponibile).</div>` : null}
+        ${plan.progression ? html`<div style="font-size:.8125rem;color:var(--c-fg2);line-height:1.45">Progressione: ${String(plan.progression.rule)} (+${GT.fmt(plan.progression.pct[0])}–${GT.fmt(plan.progression.pct[1])}% arrotondato al disco disponibile).</div>` : null}
       </div>
 
       <div style=${S.card + ';padding:6px 16px'}>
@@ -119,13 +140,14 @@
 
       ${plan.days.map(function (d) {
         return html`<div key=${d.id} style=${S.card + ';padding:6px 16px'}>
-          <div style="padding:10px 0"><div style="font-weight:900;font-size:1.0625rem">${d.name}</div>${d.notes.map(function (n, i) { return html`<div key=${i} style="font-size:.8125rem;color:var(--c-fg3);line-height:1.4;margin-top:4px">${n}</div>`; })}</div>
+          <div style="padding:10px 0"><div style="font-weight:900;font-size:1.0625rem">${d.name}</div>${d.notes.map(function (n, i) { return html`<div key=${i} style="font-size:.8125rem;color:var(--c-fg3);line-height:1.4;margin-top:4px">${String(n)}</div>`; })}</div>
           ${d.ex.map(function (x, i) {
             var n = nameOf(x.id), m = matchOf[n], e = plan.custom[x.id];
             var tags = [x.minRir != null ? 'RIR min ' + x.minRir : '', x.superset ? 'Superset ' + x.superset : ''].filter(Boolean);
             return html`<div key=${x.id + i} style="padding:9px 0;border-top:1px solid var(--c-line);display:flex;flex-direction:column;gap:2px">
               <div style="display:flex;justify-content:space-between;gap:10px"><span style="font-weight:700;font-size:.9375rem">${n}</span><span class="num" style="font-size:.8125rem;color:var(--c-fg2);white-space:nowrap">${x.sets} × ${x.reps} · ${GT.mmss(x.rest)}</span></div>
-              <div style="font-size:.75rem;color:${m && m.conf === 'media' ? 'var(--c-acc-t)' : 'var(--c-fg3)'}">${m ? '→ libreria: ' + m.to + (m.conf === 'media' ? ' · controlla l\'abbinamento' : '') : 'Nuovo esercizio · ' + (GT.MUSCLE_NAME[e && e.m] || 'muscolo non indicato')}${tags.length ? ' · ' + tags.join(' · ') : ''}</div>
+              <div style="font-size:.75rem;color:${m && m.conf === 'media' ? 'var(--c-acc-t)' : 'var(--c-fg3)'}">${m ? '→ libreria: ' + m.to + (m.conf === 'media' ? ' · controlla l\'abbinamento' : '') : 'Nuovo esercizio · ' + (e && e.m ? GT.MUSCLE_NAME[e.m] : 'muscolo non indicato') + ' · ' + (e && e.req.length ? e.req[0] : 'corpo libero')}${tags.length ? ' · ' + tags.join(' · ') : ''}</div>
+              ${x.note ? html`<div style="font-size:.75rem;color:var(--c-fg2);line-height:1.4">${String(x.note)}</div>` : null}
             </div>`;
           })}
         </div>`;
@@ -133,9 +155,9 @@
 
       ${rep.warnings.length ? html`<div style="border:1px dashed var(--c-s3);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px">
         <div style=${S.eyebrow}>Da sapere</div>
-        ${rep.warnings.map(function (w, i) { return html`<div key=${'x' + i} style="display:flex;gap:8px;font-size:.8125rem;line-height:1.45;color:var(--c-fg2)"><i class="ph-light ph-info" style="font-size:16px;flex:none;margin-top:1px"></i><span>${w}</span></div>`; })}
+        ${rep.warnings.map(function (w, i) { return html`<div key=${'x' + i} style="display:flex;gap:8px;font-size:.8125rem;line-height:1.45;color:var(--c-fg2)"><i class="ph-light ph-info" style="font-size:16px;flex:none;margin-top:1px"></i><span>${String(w)}</span></div>`; })}
       </div>` : null}
-      <div style="font-size:.8125rem;color:var(--c-fg3);line-height:1.5;padding:0 4px">La settimana 1 parte da lunedì ${GT.fmtDay(plan.startDate)}. Restano i tuoi registri, il peso, la nutrizione e i target. Il piano attuale resta salvato: lo ripristini da Allena → Scheda.</div>
+      <div style="font-size:.8125rem;color:var(--c-fg3);line-height:1.5;padding:0 4px">Restano i tuoi registri, lo storico dei carichi, il peso, la nutrizione e i target. ${st.plan ? 'Il piano attuale (' + String(st.plan.split) + ') diventa "Piano precedente": ci torni con un tocco da Allena → Scheda.' : ''}</div>
       <button onClick=${function () { GT.set({ imp: null, impErr: null }); }} style="height:48px;border-radius:12px;border:1px solid var(--c-s3);font-weight:800">Scegli un altro file</button>`;
   }
 
@@ -146,7 +168,12 @@
         ${ui.back('Scheda', close)}
         ${hasPrev ? preview(st) : pickView(st)}
       </div>`,
-      hasPrev ? html`<div key="imp-bar">${ui.bottomBar(ui.cta('Usa questa scheda', function () { A.applyImportedPlan(st.imp.plan, { effort: st.imp.effort }); GT.set({ imp: null, impErr: null }); }, { h: 64, icon: 'ph-bold ph-check', iconSize: 22 }))}</div>` : null
+      hasPrev ? html`<div key="imp-bar">${ui.bottomBar(ui.cta('Usa questa scheda', function () {
+        var imp = GT.state.imp, so = GT.importStartOptions(imp.plan, GT.state), k = imp.start || so.def;
+        var opt = so.options.filter(function (o) { return o.k === k; })[0] || so.options[0];
+        A.applyImportedPlan(Object.assign({}, imp.plan, { startDate: opt.date }), { effort: imp.effort });
+        GT.set({ imp: null, impErr: null, impPrompt: false });
+      }, { h: 64, icon: 'ph-bold ph-check', iconSize: 22 }))}</div>` : null
     ];
   };
 })();

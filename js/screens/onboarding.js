@@ -504,6 +504,7 @@
   }
 
   function stepSummary(a, p, edit, missing, emptyPlan) {
+    const importActive = !!(GT.state.plan && GT.state.plan.source && GT.state.plan.source.type === 'import');
     if (missing) {
       return {
         eyebrow: 'Riepilogo', title: emptyPlan ? 'Una seduta resta vuota' : 'Manca ancora qualcosa',
@@ -535,8 +536,9 @@
       ? `Dal tuo ${p.run.testDist} km in ${p.run.testTime} (passo 10 km stimato ${GT.pace(run ? run.p10 : 0)}/km).`
       : `Stimate dal volume (${GT.fmt(p.run.kmWeek)} km a settimana): con un tempo su 5 km diventano precise.`;
     return {
-      eyebrow: 'Riepilogo', title: edit ? 'Il piano aggiornato' : `Ecco il tuo piano${p.name ? ', ' + p.name : ''}`,
-      why: edit ? 'Aggiornando rigenero la scheda dalle nuove risposte: le modifiche fatte a mano agli esercizi vengono sostituite. Storico e registrazioni restano.'
+      eyebrow: 'Riepilogo', title: edit && importActive ? 'Profilo aggiornato' : edit ? 'Il piano aggiornato' : `Ecco il tuo piano${p.name ? ', ' + p.name : ''}`,
+      why: edit && importActive ? `La tua scheda importata (${String(GT.state.plan.split)}) resta attiva: si aggiornano target, ritmi di corsa e le attività che la scheda non ha. Il piano qui sotto è quello che l'app genererebbe: lo trovi in Allena → Piano precedente.`
+        : edit ? 'Aggiornando rigenero la scheda dalle nuove risposte: le modifiche fatte a mano agli esercizi vengono sostituite. Storico e registrazioni restano.'
         : 'Calcolato dalle tue risposte. Puoi cambiare tutto anche dopo, dal Profilo.',
       body: html`
         <div style=${S.card + ';padding:16px;display:flex;flex-direction:column;gap:12px'}>

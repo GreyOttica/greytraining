@@ -45,7 +45,7 @@
       return out;
     }
     const r = GT.weekReview(st, mon), parts = [];
-    if (d.cycle.deload) parts.push(`Settimana di scarico: meno serie, ${GT.effLabel(6)}.`);
+    if (d.cycle.deload) parts.push(`Settimana di scarico: ${GT.deloadText(st.plan, d.cycle.index)}`);
     if (r.done) parts.push((r.planned ? `${r.done}/${r.planned} sedute` : `${r.done} sedute`) + (r.gym ? `, ${r.hardSets} serie allenanti` : '') + '.');
     else parts.push(r.planned ? `Nessuna seduta registrata finora su ${r.planned} in programma.` : 'Nessuna seduta registrata questa settimana.');
     parts.push(r.dietDays ? `Calorie nel target (±10%) in ${r.dietInRange} giorni su ${r.dietDays} registrati.` : 'Nessun pasto registrato questa settimana.');

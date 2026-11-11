@@ -34,7 +34,9 @@
     const exIdx = Math.max(0, Math.min(s.exIdx || 0, s.order.length - 1));
     const id = s.order[exIdx], ex = exOf(id);
     const tg = s.tg[id] || { sets: 3, lo: 8, hi: 10, reps: '8–10', rpe: 8, rest: 120 };
-    const logs = s.logs[id] || [], allDone = logs.length >= tg.sets, isLast = exIdx === s.order.length - 1;
+    // "last" = no other exercise has sets left (supersets and jumps can change the order)
+    const openIdx = GT.nextOpenIndex(s, exIdx);
+    const logs = s.logs[id] || [], allDone = logs.length >= tg.sets, isLast = openIdx < 0;
     const step = GT.loadStep(id), bw = step === 0;
     const last = GT.lastPerformance(st, id);
     const sg = GT.suggestion(st, { id, sets: tg.sets, lo: tg.lo, hi: tg.hi }, tg.rpe);
@@ -68,7 +70,7 @@
       deltaVsLast = Math.abs(dw) > 0.001 ? `${dw > 0 ? '+' : '−'}${kg(Math.abs(dw))} kg` : dr > 0 ? `+${dr} rip` : dr < 0 ? `−${-dr} rip` : 'stesso carico';
     }
 
-    const nextId = s.order[exIdx + 1], nextEx = nextId ? exOf(nextId) : null;
+    const nextId = openIdx >= 0 ? s.order[openIdx] : null, nextEx = nextId ? exOf(nextId) : null;
     const effTarget = effTxt(rir, tg.rpe);
     const pad = st.pad;
     const left = GT.restLeft(s);
@@ -255,7 +257,10 @@ ${v.padOpen ? html`<button key="padScrim" onClick=${A.closePad} aria-label="Chiu
     if (firstEver) return 'Prima sessione registrata: da ora ti suggerisco i carichi.';
     const tgt = sm.avgTarget || 8;
     const cond = rir ? `a RIR ≥ ${fmt(10 - tgt)}` : `a RPE ≤ ${fmt(tgt)}`;
-    const rule = `stessi carichi finché non chiudi tutte le serie in cima al range ${cond}, poi un incremento (+2,5 kg bilanciere, macchine e cavi; +2 kg manubri e kettlebell; +1 ripetizione a corpo libero).`;
+    const pg = st.plan && st.plan.progression;
+    const rule = pg && pg.type === 'double'
+      ? `stessi carichi finché non chiudi tutte le serie in cima al range ${cond}, poi +${fmt(pg.pct[0])}–${fmt(pg.pct[1])}% di carico arrotondato al disco disponibile (doppia progressione della tua scheda).`
+      : `stessi carichi finché non chiudi tutte le serie in cima al range ${cond}, poi un incremento (+2,5 kg bilanciere, macchine e cavi; +2 kg manubri e kettlebell; +1 ripetizione a corpo libero).`;
     let note = sm.prs.length
       ? `Progressione confermata: ${sm.prs.length === 1 ? 'nuovo record' : `${sm.prs.length} nuovi record`}. Prossima sessione: ${rule}`
       : `Carichi in linea con l'ultima sessione. Prossima sessione: ${rule}`;

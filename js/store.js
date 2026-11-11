@@ -28,7 +28,7 @@
   var SCHEMA = 2;
 
   var PERSIST = ['primary', 'secondary', 'bgTone', 'theme', 'scale', 'effort',
-    'profile', 'targets', 'plan', 'prevPlan', 'logs', 'coach', 'chat', 'ob', 's', 'summary', 'rate', 'notify'];
+    'profile', 'targets', 'plan', 'prevPlan', 'exLib', 'logs', 'coach', 'chat', 'ob', 's', 'summary', 'rate', 'notify'];
 
   var emptyLogs = function () { return { sessions: [], cardio: [], weights: [], measures: [], food: {}, water: {}, ready: {} }; };
 
@@ -132,9 +132,25 @@
     return { ignored: false, kept: kept };
   };
 
+  // Every exercise that ever came with an imported plan, so logs keep their names, muscles and
+  // load step after the plan is replaced (st.exLib: { id: entry }, persisted and synced).
+  var withLib = function (lib, plans) {
+    var out = null;
+    plans.forEach(function (pl) {
+      var c = pl && pl.custom; if (!c) return;
+      Object.keys(c).forEach(function (id) { if (!(lib && lib[id]) || JSON.stringify(lib[id]) !== JSON.stringify(c[id])) { out = out || Object.assign({}, lib || {}); out[id] = c[id]; } });
+    });
+    return out; // null when nothing new
+  };
   GT.state = load();
-  GT.registerCustom(GT.state.plan);
-  GT.registerCustom(GT.state.prevPlan);
+  (function () {
+    var lib = withLib(GT.state.exLib, [GT.state.prevPlan, GT.state.plan]);
+    if (lib) GT.state.exLib = lib;
+    // the active plan last, so its entries win
+    GT.registerCustom(GT.state.exLib);
+    GT.registerCustom(GT.state.prevPlan);
+    GT.registerCustom(GT.state.plan);
+  })();
   var renderQueued = false;
   GT.onRender = null; // set by app.js
   GT.render = function () {
@@ -145,8 +161,14 @@
   GT.set = function (patch) {
     var p = typeof patch === 'function' ? patch(GT.state) : patch;
     if (!p) return;
-    if (p.plan) GT.registerCustom(p.plan); // exercises that came with an imported plan
-    if (p.prevPlan) GT.registerCustom(p.prevPlan);
+    // exercises that came with an imported plan: register them and keep them in exLib
+    if (p.plan || p.prevPlan || p.exLib) {
+      var lib = withLib(p.exLib || GT.state.exLib, [p.prevPlan, p.plan]);
+      if (lib) p = Object.assign({}, p, { exLib: lib });
+      if (p.exLib) GT.registerCustom(p.exLib);
+      if (p.prevPlan) GT.registerCustom(p.prevPlan);
+      if (p.plan) GT.registerCustom(p.plan);
+    }
     GT.state = Object.assign({}, GT.state, p);
     GT.render();
     scheduleSave();
@@ -223,12 +245,12 @@
     if (gym) {
       if (!gym.day || !gym.day.ex.length) return gym.day ? gym.day.name + ' non ha esercizi: aggiungine dalla scheda in Allena.' : '';
       if (!rd) return 'Fai il check-in di 30 secondi: adatto volume e intensità di ' + gym.day.name + ' a come stai oggi.';
-      if (rd.score < 55) return 'Readiness bassa. Oggi una serie in meno per esercizio, RPE massimo 7. Il volume perso si recupera in settimana.';
+      if (rd.score < 55) return 'Readiness bassa. Oggi una serie in meno per esercizio, ' + (GT.state.effort === 'RIR' ? 'almeno RIR 3' : 'RPE massimo 7') + '. Il volume perso si recupera in settimana.';
       var first = gym.day.ex[0], t = GT.targetFor(st.plan, first, today), sg = GT.suggestion(st, first, t.rpe), name = GT.EXI[first.id].n;
-      if (t.deload) return 'Settimana di scarico: stessi esercizi, meno serie, RPE 6. Lascia sempre 3–4 ripetizioni di margine.';
-      if (sg.w == null) return name + ': prima volta. Scegli un carico che chiudi a RPE ' + GT.fmt(t.rpe) + ' e registra ogni serie: dalla prossima ti suggerisco i carichi.';
-      if (rd.score < 75) return 'Readiness nella media. Mantieni i carichi della scorsa volta e chiudi le serie a RPE ' + GT.fmt(t.rpe - 0.5) + '–' + GT.fmt(t.rpe) + '.';
-      return name + ': ' + sg.why + ' Oggi ' + (sg.w ? GT.fmtKg(sg.w) + ' kg × ' : '') + sg.r + ', fermati a RPE ' + GT.fmt(t.rpe) + '.';
+      if (t.deload) return 'Settimana di scarico: ' + GT.deloadText(st.plan, GT.cycleWeek(st.plan, today).index) + ' Lascia sempre margine prima del cedimento.';
+      if (sg.w == null) return name + ': prima volta. Scegli un carico che chiudi a ' + GT.effLabel(t.rpe) + ' e registra ogni serie: dalla prossima ti suggerisco i carichi.';
+      if (rd.score < 75) return 'Readiness nella media. Mantieni i carichi della scorsa volta e chiudi le serie a ' + (GT.state.effort === 'RIR' ? 'RIR ' + GT.fmt(10 - t.rpe) + '–' + GT.fmt(10.5 - t.rpe) : 'RPE ' + GT.fmt(t.rpe - 0.5) + '–' + GT.fmt(t.rpe)) + '.';
+      return name + ': ' + sg.why + ' Oggi ' + (sg.w ? GT.fmtKg(sg.w) + ' kg × ' : '') + sg.r + ', fermati a ' + GT.effLabel(t.rpe) + '.';
     }
     if (cardio) return 'Oggi ' + cardio.cardio.name + '. ' + String(cardio.cardio.note || '').split('. ')[0].replace(/\.$/, '') + '.';
     return T ? 'Giorno di riposo: cammina, dormi 7–9 ore e porta le proteine a ' + T.p + ' g.' : 'Giorno di riposo.';
@@ -300,37 +322,61 @@
   // Change profile fields. regenerate: rebuild the plan too (keeps its start date and the logs).
   A.updateProfile = function (patch, regenerate) {
     var st = GT.state, p = Object.assign({}, st.profile, patch), t = GT.computeTargets(p);
-    var out = { profile: p, targets: t };
-    if (regenerate) { var plan = GT.generatePlan(p, st.plan ? st.plan.startDate : GT.todayISO()); if (st.plan) plan.startDate = st.plan.startDate; out.plan = plan; }
+    var out = { profile: p, targets: t }, kept = null;
+    if (regenerate) {
+      var plan = GT.generatePlan(p, st.plan ? st.plan.startDate : GT.todayISO());
+      var isImport = !!(st.plan && st.plan.source && st.plan.source.type === 'import');
+      if (st.plan && !isImport) plan.startDate = st.plan.startDate;
+      if (isImport) {
+        // The imported program stays active. Only what comes from the profile is refreshed:
+        // run paces (from the new 5/10 km time) and runs or swims the program does not have.
+        var imp = JSON.parse(JSON.stringify(st.plan)), added = [];
+        if (imp.run && imp.run.src && GT.importRuns) imp.run = GT.importRuns(p, imp.run.src, GT.todayISO());
+        var freeDay = function (wd) { return !imp.week[wd].items.length; };
+        ['run', 'swim'].forEach(function (k) {
+          if (imp[k] || !plan[k]) return;
+          imp[k] = plan[k];
+          plan.week.forEach(function (w) { w.items.forEach(function (it) { if ((k === 'run' ? it.type === 'run' : it.type === 'swim') && freeDay(w.wd)) imp.week[w.wd].items.push(it); }); });
+          added.push(k === 'run' ? 'corse' : 'nuoto');
+        });
+        out.plan = imp;
+        // the regenerated plan becomes "Piano precedente", unless that slot holds another import
+        var keepPrev = st.prevPlan && st.prevPlan.source && st.prevPlan.source.type === 'import';
+        if (!keepPrev) out.prevPlan = plan;
+        kept = { added: added, prevStored: !keepPrev };
+      } else out.plan = plan;
+    }
     GT.set(out);
-    A.toast('set', regenerate ? 'Piano aggiornato' : 'Profilo aggiornato', GT.fk(t.k) + ' kcal · P ' + t.p + ' g');
+    if (kept) A.toast('set', 'Profilo aggiornato · scheda importata attiva', (kept.added.length ? 'Aggiunte ' + kept.added.join(' e ') + ' dal profilo. ' : '') + (kept.prevStored ? 'Il piano rigenerato è in "Piano precedente".' : 'Il piano precedente resta quello importato.'));
+    else A.toast('set', regenerate ? 'Piano aggiornato' : 'Profilo aggiornato', GT.fk(t.k) + ' kcal · P ' + t.p + ' g');
   };
   // Start the questionnaire again with the current answers prefilled (logs are kept)
   A.editQuestionnaire = function () { GT.set(function (st) { return { ob: { step: 1, a: Object.assign({}, st.profile || {}), edit: true }, overlay: null }; }); };
   // Wipe profile, plan and every log (a local backup is kept), back to the questionnaire
   A.resetEverything = function () {
     GT.backupNow();
-    GT.set({ profile: null, targets: null, plan: null, logs: emptyLogs(), coach: {}, chat: [], s: null, summary: null, ob: { step: 0, a: {} }, overlay: null, tab: 'oggi', allenView: null, nutriView: null });
+    GT.set({ profile: null, targets: null, plan: null, prevPlan: null, exLib: null, restoreAsk: false, logs: emptyLogs(), coach: {}, chat: [], s: null, summary: null, ob: { step: 0, a: {} }, overlay: null, tab: 'oggi', allenView: null, nutriView: null });
   };
 
   // ---------- imported plan ----------
-  // Replace the plan with one built by GT.importProgram. The current plan is kept in prevPlan
-  // so it can be restored; logs, targets and profile are untouched.
+  // Replace the plan with one built by GT.importProgram. The current plan becomes prevPlan
+  // (one-step undo); logs, targets and profile are untouched; its exercises join exLib.
   // opts.effort: 'RIR' | 'RPE' to switch how effort is shown (imported plans are often in RIR).
   A.applyImportedPlan = function (plan, opts) {
     var o = opts || {};
     GT.set(function (st) {
-      var out = { plan: plan, prevPlan: st.plan && !(st.plan.source && st.plan.source.type === 'import' && st.prevPlan) ? st.plan : (st.prevPlan || st.plan), allenView: null, tab: 'allen', disc: 'palestra', allenSub: 'scheda' };
-      if (o.effort === 'RIR' || o.effort === 'RPE') out.effort = o.effort;
+      var out = { plan: plan, prevPlan: st.plan || null, restoreAsk: false, allenView: null, tab: 'allen', disc: 'palestra', allenSub: 'scheda' };
+      // the profile keeps the scale too, so a later questionnaire edit does not switch it back
+      if (o.effort === 'RIR' || o.effort === 'RPE') { out.effort = o.effort; if (st.profile) out.profile = Object.assign({}, st.profile, { effort: o.effort }); }
       return out;
     });
     A.toast('set', 'Scheda importata', plan.split + ' · ' + plan.days.length + ' sedute');
   };
-  // Go back to the plan that was active before the last import
+  // Switch with the previous plan (a swap: tapping again goes back)
   A.restorePrevPlan = function () {
     var st = GT.state; if (!st.prevPlan) return;
-    GT.set({ plan: st.prevPlan, prevPlan: null });
-    A.toast('set', 'Piano ripristinato', st.prevPlan.split || 'Piano precedente');
+    GT.set({ plan: st.prevPlan, prevPlan: st.plan, restoreAsk: false });
+    A.toast('set', 'Piano attivo: ' + (st.prevPlan.split || 'piano precedente'), 'L\'altro resta in "Piano precedente"');
   };
 
   // ---------- readiness ----------
@@ -353,7 +399,16 @@
   A.planRemove = function (dayId, i) { editDay(dayId, function (d) { d.ex.splice(i, 1); }); };
   A.planMove = function (dayId, i, dir) { editDay(dayId, function (d) { var j = i + dir; if (j < 0 || j >= d.ex.length) return; var x = d.ex[i]; d.ex[i] = d.ex[j]; d.ex[j] = x; }); };
   // Replace an exercise, keeping sets and reps
-  A.planSwap = function (dayId, i, exId) { editDay(dayId, function (d) { d.ex[i] = Object.assign({}, d.ex[i], { id: exId }); }); };
+  // (rules that belonged to an imported exercise - RIR floor, note, superset - stay with it;
+  // orig remembers it so the picker can offer it back)
+  A.planSwap = function (dayId, i, exId) {
+    editDay(dayId, function (d) {
+      var old = d.ex[i], e = GT.EXI[exId] || {};
+      var orig = old.orig || (GT.EXI[old.id] && GT.EXI[old.id].custom ? { id: old.id, comp: old.comp, minRir: old.minRir, note: old.note, superset: old.superset } : null);
+      var back = orig && orig.id === exId;
+      d.ex[i] = Object.assign({}, old, { id: exId, comp: back ? orig.comp : !!e.comp, minRir: back ? orig.minRir : null, note: back ? orig.note : null, superset: back ? orig.superset : null, orig: back ? null : orig });
+    });
+  };
   A.planAdd = function (dayId, exId) {
     editDay(dayId, function (d, plan, st) {
       var e = GT.EXI[exId], iso = !e.comp;
@@ -386,7 +441,19 @@
   };
   A.minimizeSession = function () { GT.set({ overlay: null, pad: null }); };
   A.jumpToExercise = function (i) { var s = GT.state.s; GT.set({ s: A.prefill(Object.assign({}, s), i) }); };
-  A.nextExercise = function () { var s = GT.state.s; GT.set({ s: Object.assign(A.prefill(s, s.exIdx + 1), { rest: s.rest }) }); };
+  // Next exercise with sets still to do: after the current one first, then from the start
+  // (supersets and jumps can leave an earlier exercise unfinished). -1 when all are done.
+  GT.nextOpenIndex = function (s, from, logsMap) {
+    var L = logsMap || s.logs, open = function (i) { var x = s.order[i]; return (L[x] || []).length < ((s.tg[x] || {}).sets || 1); };
+    for (var i = from + 1; i < s.order.length; i++) if (open(i)) return i;
+    for (var j = 0; j <= Math.min(from, s.order.length - 1); j++) if (open(j) && j !== from) return j;
+    return -1;
+  };
+  A.nextExercise = function () {
+    var s = GT.state.s, n = GT.nextOpenIndex(s, s.exIdx);
+    if (n < 0) n = Math.min(s.order.length - 1, s.exIdx + 1);
+    GT.set({ s: Object.assign(A.prefill(s, n), { rest: s.rest }) });
+  };
   A.setEffort = function (e) { GT.set({ s: Object.assign({}, GT.state.s, { e: e }) }); };
   A.discardSession = function () { GT.set({ s: null, summary: null, overlay: null, pad: null }); A.toast('info', 'Allenamento annullato', 'Nessuna serie salvata'); };
 
@@ -394,12 +461,38 @@
     var s = GT.state.s, id = s.order[s.exIdx], tg = s.tg[id], logs = s.logs[id] || [];
     if (s.w == null) { A.openPad('w'); return; } // first time: choose a load first
     var e1 = GT.e1rm(s.w, s.r);
-    var prev = GT.bestE1RM(GT.state, id, logs).value;
+    // best so far includes today's sets of the whole family (a back-off set is not a record)
+    var famLogs = (GT.exFamily ? GT.exFamily(id) : [id]).reduce(function (a, x) { return a.concat(s.logs[x] || []); }, []);
+    var prev = GT.bestE1RM(GT.state, id, famLogs).value;
     var pr = prev > 0 && e1 > prev + 0.05;
     var nl = logs.concat([{ w: s.w, r: s.r, e: s.e, e1: e1, pr: pr }]);
-    var lastAll = s.exIdx === s.order.length - 1 && nl.length >= tg.sets;
     var logsNext = Object.assign({}, s.logs); logsNext[id] = nl;
-    GT.set({ s: Object.assign({}, s, { logs: logsNext, justDone: nl.length - 1, rest: lastAll ? null : { end: Date.now() + tg.rest * 1000, total: tg.rest } }) });
+    // no rest after the very last set of the workout (whatever the order the exercises were done in)
+    var lastAll = nl.length >= tg.sets && GT.nextOpenIndex(s, s.exIdx, logsNext) < 0;
+    var restObj = lastAll ? null : { end: Date.now() + tg.rest * 1000, total: tg.rest };
+    var prToast = function () { if (pr) A.toast('pr', 'Nuovo record personale', (GT.EXI[id] ? GT.EXI[id].n : id) + ' · 1RM stimato ' + GT.fmt(e1) + ' kg'); return pr; };
+    // Superset: alternate the exercises of the group; rest only after the last one of each round
+    if (tg.superset) {
+      var group = s.order.map(function (x, i) { return i; }).filter(function (i) { return (s.tg[s.order[i]] || {}).superset === tg.superset; });
+      var left = function (i) { var x = s.order[i]; return ((x === id ? nl : s.logs[x]) || []).length < s.tg[x].sets; };
+      var after = group.filter(function (i) { return i > s.exIdx && left(i); })[0];
+      var again = group.filter(function (i) { return left(i); })[0];
+      if (after != null) {
+        // next exercise of the round, no rest in between
+        var ns = A.prefill(Object.assign({}, s, { logs: logsNext }), after);
+        GT.set({ s: Object.assign(ns, { rest: null, justDone: -1 }) });
+        if (!prToast()) A.toast('set', 'Serie ' + nl.length + ' registrata', 'Superset: ora ' + (GT.EXI[s.order[after]] || {}).n);
+        return;
+      }
+      if (again != null && again !== s.exIdx) {
+        // round done: rest, then back to the first exercise of the group
+        var nb = A.prefill(Object.assign({}, s, { logs: logsNext }), again);
+        GT.set({ s: Object.assign(nb, { rest: { end: Date.now() + tg.rest * 1000, total: tg.rest }, justDone: -1 }) });
+        if (!prToast()) A.toast('set', 'Giro di superset completato', 'Recupero, poi ' + (GT.EXI[s.order[again]] || {}).n);
+        return;
+      }
+    }
+    GT.set({ s: Object.assign({}, s, { logs: logsNext, justDone: nl.length - 1, rest: restObj }) });
     var name = GT.EXI[id] ? GT.EXI[id].n : id;
     if (pr) A.toast('pr', 'Nuovo record personale', name + ' · 1RM stimato ' + GT.fmt(e1) + ' kg');
     else A.toast('set', 'Serie ' + nl.length + ' registrata', (s.w ? GT.fmtKg(s.w) + ' kg × ' : '') + s.r + ' · ' + GT.effLabel(s.e));
@@ -413,8 +506,13 @@
   A.sessionSwap = function (newId) {
     var s = GT.state.s, i = s.exIdx, old = s.order[i];
     if ((s.logs[old] || []).length) return;
+    if (s.order.indexOf(newId) >= 0) return; // already in this workout
     var order = s.order.slice(); order[i] = newId;
-    var tg = Object.assign({}, s.tg); tg[newId] = tg[old]; delete tg[old];
+    var tg = Object.assign({}, s.tg), e = GT.EXI[newId] || {}, plan = GT.state.plan;
+    // Same sets and reps; effort recomputed for the new exercise; the old one's rules do not carry over
+    var rpe = tg[old].rpe;
+    if (plan && plan.weeksSpec) rpe = GT.targetFor(plan, { id: newId, sets: tg[old].sets, comp: !!e.comp }, s.date).rpe;
+    tg[newId] = Object.assign({}, tg[old], { rpe: rpe, note: '', minRir: null, superset: null }); delete tg[old];
     GT.set({ s: A.prefill(Object.assign({}, s, { order: order, tg: tg }), i), overlay: 'session', allenView: null, exBack: null });
   };
   A.restMinus = function () {
@@ -498,7 +596,9 @@
     var st = GT.state, sm = st.summary, s = st.s;
     if (!s) { GT.set({ summary: null, overlay: null }); return; }
     var rec = { id: 's' + s.start, date: s.date, dayId: s.dayId, dayName: s.dayName, start: s.start, dur: sm.dur, sets: s.logs, vol: sm.vol,
-      prs: s.order.filter(function (id) { return (s.logs[id] || []).some(function (l) { return l.pr; }); }), rate: st.rate, notes: s.notes, week: GT.cycleWeek(st.plan, s.date).num };
+      prs: s.order.filter(function (id) { return (s.logs[id] || []).some(function (l) { return l.pr; }); }), rate: st.rate, notes: s.notes, week: GT.cycleWeek(st.plan, s.date).num,
+      // whether it was a deload week under the plan active then (a later plan may number weeks differently)
+      deload: !!GT.cycleWeek(st.plan, s.date).deload };
     GT.set(function (x) {
       var logs = Object.assign({}, x.logs); logs.sessions = (logs.sessions || []).concat([rec]);
       return { logs: logs, s: null, summary: null, overlay: null, tab: 'oggi', rate: 3 };
@@ -584,15 +684,24 @@
 
   // ---------- coach ----------
   A.coachAction = function (a, verdict) {
-    var coach = Object.assign({}, GT.state.coach); coach[a.id] = verdict;
-    GT.set({ coach: coach });
-    if (verdict !== 'ok') return;
+    var remember = function () { var coach = Object.assign({}, GT.state.coach); coach[a.id] = verdict; GT.set({ coach: coach }); };
+    if (verdict !== 'ok') { remember(); return; }
     if (a.kind === 'addSet' && a.data && GT.state.plan) {
-      // +1 set on the plan exercise that trains this muscle most directly
-      var best = null;
-      GT.state.plan.days.forEach(function (d) { d.ex.forEach(function (x, i) { var e = GT.EXI[x.id]; if (e && e.m === a.data.muscle && (!best || x.sets < best.sets)) best = { day: d.id, i: i, sets: x.sets, n: e.n }; }); });
-      if (best) { A.planSets(best.day, best.i, 1); A.toast('set', 'Serie aggiunta', best.n + ' · ' + (best.sets + 1) + ' serie'); return; }
+      // +1 set on the plan exercise that trains this muscle most directly: primary muscle first
+      // (fewest sets), else the one that credits it most (e.g. glutes from Romanian deadlift)
+      var best = null, mk = a.data.muscle, sched = {};
+      // only sessions in the calendar count for the planned volume
+      GT.state.plan.week.forEach(function (w) { w.items.forEach(function (it) { if (it.type === 'gym') sched[it.id] = true; }); });
+      GT.state.plan.days.forEach(function (d) { if (!sched[d.id]) return; d.ex.forEach(function (x, i) {
+        var e = GT.EXI[x.id]; if (!e || !e.mg || !e.mg[mk] || x.sets >= 8) return;
+        var score = (e.m === mk ? 10 : 0) + e.mg[mk] - x.sets / 100;
+        if (!best || score > best.score) best = { day: d.id, i: i, sets: x.sets, n: e.n, score: score };
+      }); });
+      if (best) { remember(); A.planSets(best.day, best.i, 1); A.toast('set', 'Serie aggiunta', best.n + ' · ' + (best.sets + 1) + ' serie'); return; }
+      A.toast('info', 'Nessun esercizio adatto', 'Nella scheda nessun esercizio allena ' + (GT.MUSCLE_NAME[mk] || mk).toLowerCase() + ': aggiungine uno dalla scheda.');
+      return;
     }
+    remember();
     if (a.kind === 'weigh') { GT.set({ tab: 'prog', progSub: 'corpo', overlay: 'weight', weightPad: null }); return; }
     A.toast('set', 'Fatto', a.title);
   };
@@ -604,7 +713,14 @@
       return 'Oggi hai ' + GT.fk(f.tot.k) + ' kcal su ' + GT.fk(T.k) + ' e ' + f.tot.p + ' g di proteine su ' + T.p + '. Ti mancano ' + Math.max(0, T.p - f.tot.p) + ' g di proteine e ' + GT.fk(Math.max(0, T.k - f.tot.k)) + ' kcal.';
     }
     if (/spalla|dolor|fastidio|male|infortun/.test(low)) return 'Se c\'è dolore, fermati e non caricare la zona. Nel Profilo puoi segnare la limitazione: il piano escluderà gli esercizi che la stressano. Se il fastidio dura più di una settimana, fatti valutare da un medico o un fisioterapista.';
-    if (/scaric|deload/.test(low)) return 'La settimana 5 del ciclo è di scarico: stessi esercizi, circa 40% di serie in meno, RPE 6. Serve a smaltire la fatica accumulata.';
+    if (/scaric|deload/.test(low)) {
+      // this week's deload, else the next one, else the first of the next cycle
+      var cwk = st.plan ? GT.cycleWeek(st.plan, GT.todayISO()) : null;
+      var dl = !cwk ? -1 : cwk.deload ? cwk.index : GT.nextDeload(st.plan, cwk.index);
+      if (cwk && dl < 0) dl = GT.nextDeload(st.plan, 0);
+      if (dl < 0) return 'La tua scheda non prevede settimane di scarico. Se la fatica si accumula, fai una settimana con metà delle serie e più margine dal cedimento.';
+      return 'La settimana ' + (dl + 1) + ' del ciclo è di scarico: ' + GT.deloadText(st.plan, dl) + ' Serve a smaltire la fatica accumulata.';
+    }
     return 'Il coach AI non è raggiungibile in questo momento. Accedi dal Profilo e riprova quando sei online.';
   }
 
@@ -622,9 +738,9 @@
       target_nutrizione: st.targets,
       piano: plan ? { split: plan.split, origine: plan.source ? 'scheda importata dall\'utente' : 'generato dall\'app', note_e_regole: plan.notes || null,
         progressione: plan.progression ? plan.progression.rule : '+2,5 kg dopo due sedute con il range chiuso a RPE ≤ target',
-        settimane: plan.weeksSpec ? plan.weeksSpec.map(function (w, i) { return 'S' + (i + 1) + ' ' + w.type + ' RPE multi ' + w.rpeComp + ' / iso ' + w.rpeIso + (w.setsMult !== 1 ? ' serie x' + w.setsMult : ''); }) : null,
+        settimane: plan.weeksSpec ? plan.weeksSpec.map(function (w, i) { return 'S' + (i + 1) + ' ' + w.type + (w.rirComp ? ' RIR multi ' + w.rirComp.join('-') + ' / iso ' + (w.rirIso || w.rirComp).join('-') : '') + ' (RPE multi ' + w.rpeComp + ' / iso ' + w.rpeIso + ')' + (w.setsMult !== 1 ? ' serie x' + w.setsMult : '') + (w.deload ? ' scarico' : ''); }) : null,
         settimana_ciclo: d.cycle.num + ' di ' + plan.cycleWeeks + (d.cycle.deload ? ' (scarico)' : ''),
-        giorni: plan.days.map(function (x) { return { nome: x.name, esercizi: x.ex.map(function (e) { return exName(e.id) + ' ' + e.sets + 'x' + e.reps; }) }; }),
+        giorni: plan.days.map(function (x) { return { nome: x.name, note: (x.notes || []).join(' · ') || null, esercizi: x.ex.map(function (e) { return exName(e.id) + ' ' + e.sets + 'x' + e.reps + (e.minRir != null ? ' RIR min ' + e.minRir : '') + (e.superset ? ' superset ' + e.superset : '') + (e.note ? ' (' + e.note + ')' : ''); }) }; }),
         calendario: plan.week.map(function (w) { return GT.DAYS_SHORT[w.wd] + ': ' + (w.items.map(function (it) { return it.type === 'gym' ? (GT.findDay(plan, it.id) || {}).name : (GT.findCardio(plan, it.id) || {}).name; }).join(' + ') || 'riposo'); }),
         zone_corsa: plan.run ? plan.run.zones.map(function (z) { return z.z + ' ' + z.n + ' ' + z.label + '/km'; }) : null } : null,
       oggi_in_programma: d.todayPlan.items.map(function (i) { return (i.day ? i.day.name : i.cardio.name) + (i.done ? ' (fatto)' : ''); }),

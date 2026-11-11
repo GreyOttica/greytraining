@@ -325,7 +325,28 @@
     if (!plan) return { index: 0, num: 1, cycle: 1, deload: false };
     var w = Math.max(0, Math.floor(GT.daysBetween(plan.startDate, GT.mondayOf(dateISO || GT.todayISO())) / 7));
     var idx = w % plan.cycleWeeks;
-    return { index: idx, num: idx + 1, cycle: Math.floor(w / plan.cycleWeeks) + 1, deload: idx === plan.deloadIndex };
+    return { index: idx, num: idx + 1, cycle: Math.floor(w / plan.cycleWeeks) + 1, deload: GT.isDeloadWeek(plan, idx) };
+  };
+  // Is week index i (0-based) a deload? Imported plans mark each week; generated ones have one deloadIndex.
+  GT.isDeloadWeek = function (plan, i) {
+    if (!plan) return false;
+    return plan.weeksSpec ? !!(plan.weeksSpec[i] || {}).deload : i === plan.deloadIndex;
+  };
+  // Index of the next deload week from index i (i itself included), or -1
+  GT.nextDeload = function (plan, i) {
+    if (!plan) return -1;
+    for (var k = i; k < plan.cycleWeeks; k++) if (GT.isDeloadWeek(plan, k)) return k;
+    return -1;
+  };
+  // "50% di serie in meno, RIR 3–4" for a deload week, from the plan's own numbers
+  GT.deloadText = function (plan, i) {
+    var spec = plan && plan.weeksSpec && plan.weeksSpec[i];
+    var eff = function (rpe) { return GT.effLabel ? GT.effLabel(rpe) : 'RPE ' + GT.fmt(rpe); };
+    if (!spec) return 'stessi esercizi, circa 40% di serie in meno, ' + eff(6) + '.';
+    var less = Math.round((1 - (spec.setsMult || 1)) * 100), r = spec.rirComp;
+    var effTxt = r && GT.state && GT.state.effort === 'RIR' ? 'RIR ' + (r[0] === r[1] ? GT.fmt(r[0]) : GT.fmt(r[0]) + '–' + GT.fmt(r[1]))
+      : r ? 'RPE ' + (r[0] === r[1] ? GT.fmt(10 - r[0]) : GT.fmt(10 - r[1]) + '–' + GT.fmt(10 - r[0])) : eff(spec.rpeComp);
+    return 'stessi esercizi, ' + (less > 0 ? less + '% di serie in meno, ' : '') + effTxt + '.';
   };
   // Target RPE and sets for a planned exercise on a date.
   // Generated plans: rpeWeeks + rpeOffset, deload = RPE 6 and ~60% of the sets.

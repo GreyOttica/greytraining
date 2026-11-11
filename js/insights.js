@@ -19,39 +19,68 @@
   // ---------- strength ----------
   GT.e1rm = function (w, r) { return w > 0 && r > 0 ? w * (1 + r / 30) : 0; };
 
+  // Sets of an exercise in one saved session. History is shared across the exercise's family
+  // (library lift + imported exercises linked to it, see GT.exFamily), so a new program keeps it.
+  var famSets = function (s, fam) {
+    if (!s.sets) return null;
+    for (var i = 0; i < fam.length; i++) { var x = s.sets[fam[i]]; if (x && x.length) return x; }
+    return null;
+  };
+  var famOf = function (id) { return GT.exFamily ? GT.exFamily(id) : [id]; };
+  // Every set of the family in one session (for records and charts: a top set and its back-off
+  // sets may sit under two ids)
+  var famAll = function (s, fam) {
+    if (!s.sets) return null;
+    var out = fam.reduce(function (a, id) { return a.concat(s.sets[id] || []); }, []);
+    return out.length ? out : null;
+  };
+
   // Most recent saved session that contains this exercise
   GT.lastPerformance = function (st, exId) {
-    var ss = logsOf(st).sessions || [];
+    var ss = logsOf(st).sessions || [], fam = famOf(exId);
     for (var i = ss.length - 1; i >= 0; i--) {
-      var sets = ss[i].sets && ss[i].sets[exId];
-      if (sets && sets.length) return { date: ss[i].date, sets: sets };
+      var sets = famSets(ss[i], fam);
+      if (sets) return { date: ss[i].date, sets: sets, week: ss[i].week };
     }
     return null;
   };
   // Best estimated 1RM ever (saved sessions), optionally plus sets of the running session
   GT.bestE1RM = function (st, exId, extra) {
-    var best = 0, at = null;
+    var best = 0, at = null, fam = famOf(exId);
     (logsOf(st).sessions || []).forEach(function (s) {
-      (s.sets && s.sets[exId] || []).forEach(function (l) { var v = GT.e1rm(l.w, l.r); if (v > best) { best = v; at = { date: s.date, w: l.w, r: l.r }; } });
+      (famAll(s, fam) || []).forEach(function (l) { var v = GT.e1rm(l.w, l.r); if (v > best) { best = v; at = { date: s.date, w: l.w, r: l.r }; } });
     });
     (extra || []).forEach(function (l) { var v = GT.e1rm(l.w, l.r); if (v > best) { best = v; at = { date: GT.todayISO(), w: l.w, r: l.r }; } });
     return { value: best, set: at };
   };
   // e1RM per session (best set) over time, for charts
   GT.e1rmSeries = function (st, exId) {
+    var fam = famOf(exId);
     return (logsOf(st).sessions || []).map(function (s) {
-      var sets = s.sets && s.sets[exId];
-      if (!sets || !sets.length) return null;
+      var sets = famAll(s, fam);
+      if (!sets) return null;
       return { date: s.date, v: Math.max.apply(null, sets.map(function (l) { return GT.e1rm(l.w, l.r); })) };
     }).filter(Boolean);
   };
   // Exercises with at least one logged set, most-trained first
+  // (one id per exercise family: the one in the current plan, else the most trained)
   GT.trainedExercises = function (st) {
-    var count = {};
+    var count = {}, fam = {};
     (logsOf(st).sessions || []).forEach(function (s) { Object.keys(s.sets || {}).forEach(function (id) { count[id] = (count[id] || 0) + (s.sets[id] || []).length; }); });
-    return Object.keys(count).sort(function (a, b) { return count[b] - count[a]; });
+    var inPlan = function (id) { return !!(st.plan && st.plan.days.some(function (d) { return d.ex.some(function (x) { return x.id === id; }); })); };
+    Object.keys(count).forEach(function (id) {
+      var root = famOf(id)[0], f = fam[root] || (fam[root] = { n: 0, id: id });
+      f.n += count[id];
+      if ((inPlan(id) && !inPlan(f.id)) || (inPlan(id) === inPlan(f.id) && count[id] > count[f.id])) f.id = id;
+    });
+    return Object.keys(fam).sort(function (a, b) { return fam[b].n - fam[a].n; }).map(function (k) {
+      // a family member in the current plan (even with no sets yet) gives the name shown
+      if (!inPlan(fam[k].id)) { var p = famOf(k).filter(inPlan)[0]; if (p) return p; }
+      return fam[k].id;
+    });
   };
   // Personal records: best e1RM per exercise
+  // (one row per exercise family: the imported name wins when it is in the current plan)
   GT.personalRecords = function (st) {
     return GT.trainedExercises(st).map(function (id) {
       var b = GT.bestE1RM(st, id);
@@ -68,10 +97,10 @@
 
   // The last n saved sessions that contain this exercise, newest first
   GT.lastPerformances = function (st, exId, n) {
-    var ss = logsOf(st).sessions || [], out = [];
+    var ss = logsOf(st).sessions || [], out = [], fam = famOf(exId);
     for (var i = ss.length - 1; i >= 0 && out.length < n; i--) {
-      var sets = ss[i].sets && ss[i].sets[exId];
-      if (sets && sets.length) out.push({ date: ss[i].date, sets: sets });
+      var sets = famSets(ss[i], fam);
+      if (sets) out.push({ date: ss[i].date, sets: sets, week: ss[i].week, deload: ss[i].deload });
     }
     return out;
   };
@@ -80,13 +109,31 @@
   // Rule (handoff): +1 load step when the top of the rep range was reached on every planned set
   // at RPE ≤ target in the last TWO sessions with this exercise at the same load.
   GT.suggestion = function (st, planEx, targetRpe) {
-    var perf = GT.lastPerformances(st, planEx.id, 2), step = GT.loadStep(planEx.id);
-    var last = perf[0];
-    if (!last) return { w: step === 0 ? 0 : null, r: planEx.hi, why: step === 0 ? 'Prima volta: fermati 2–3 ripetizioni prima del cedimento.' : 'Prima volta: scegli un carico che chiudi a ' + (GT.effLabel ? GT.effLabel(targetRpe) : 'RPE ' + GT.fmt(targetRpe)) + '.' };
+    var plan = st.plan, today = GT.todayISO(), step = GT.loadStep(planEx.id);
+    var eff = function (r) { return GT.effLabel ? GT.effLabel(r) : 'RPE ' + GT.fmt(r); };
+    // Deload weeks do not count as a reference: fewer sets, easier on purpose
+    var nW = plan ? plan.cycleWeeks || 1 : 1;
+    var dlWeek = function (num) {
+      if (!plan || !num) return false;
+      var i = (num - 1) % nW;
+      return plan.weeksSpec ? !!(plan.weeksSpec[i] || {}).deload : i === plan.deloadIndex;
+    };
     var topOf = function (sets) { return sets.reduce(function (a, b) { return (b.w > a.w || (b.w === a.w && b.r > a.r)) ? b : a; }); };
+    var anyPerf = GT.lastPerformance(st, planEx.id);
+    if (!anyPerf) return { w: step === 0 ? 0 : null, r: planEx.hi, why: step === 0 ? 'Prima volta: fermati 2–3 ripetizioni prima del cedimento.' : 'Prima volta: scegli un carico che chiudi a ' + eff(targetRpe) + '.' };
+    // This week is a deload: same loads as last time, no increase
+    if (plan && GT.cycleWeek(plan, today).deload) return { w: topOf(anyPerf.sets).w, r: planEx.lo, why: 'Settimana di scarico: stesso carico, meno serie, lontano dal cedimento.' };
+    var perf = GT.lastPerformances(st, planEx.id, 6).filter(function (p) { return !(p.deload != null ? p.deload : dlWeek(p.week)); }).slice(0, 2);
+    var last = perf[0];
+    if (!last) return { w: topOf(anyPerf.sets).w, r: planEx.hi, why: 'Riparti dal carico dello scarico e chiudi a ' + eff(targetRpe) + '.' };
+    // Sets are judged against the target of the week they were done in (not today's)
+    var full = null;
+    if (plan) plan.days.forEach(function (d) { d.ex.forEach(function (x) { if (!full && x.id === planEx.id) full = x; }); });
+    var targetAt = function (p) { return full && plan ? GT.targetFor(plan, full, p.date).rpe : targetRpe; };
+    var setsNeeded = full ? full.sets : planEx.sets;
     // Imported programs give RIR as a range (e.g. 2–3, target = mean 2.5): any value inside the range counts
-    var prog = st.plan && st.plan.progression, tol = prog ? 0.51 : 0.01;
-    var closed = function (p) { return p.sets.length >= planEx.sets && p.sets.every(function (l) { return l.r >= planEx.hi && (l.e || 10) <= targetRpe + tol; }); };
+    var prog = plan && plan.progression, tol = prog ? 0.51 : 0.01;
+    var closed = function (p) { var t = targetAt(p); return p.sets.length >= setsNeeded && p.sets.every(function (l) { return l.r >= planEx.hi && (l.e || 10) <= t + tol; }); };
     var top = topOf(last.sets);
     // An imported plan may bring its own rule, e.g. double progression after ONE session,
     // with a percentage increase rounded to the load step.
@@ -96,12 +143,13 @@
         var inc = Math.max(step, Math.round(top.w * pct / step) * step);
         return { w: top.w + inc, r: planEx.lo, up: true, why: 'Tutte le serie al massimo del range: +' + GT.fmtKg(inc) + ' kg (doppia progressione della tua scheda).' };
       }
-      if (closed(last)) return { w: 0, r: Math.min(planEx.hi + 2, top.r + 1), up: true, why: 'Tutte le serie al massimo del range: +1 ripetizione.' };
-      return { w: top.w, r: Math.min(planEx.hi, top.r + 1), why: 'Stesso carico finché chiudi tutte le serie a ' + planEx.hi + ' ripetizioni.' };
+      if (closed(last)) return { w: top.w, r: Math.min(planEx.hi + 2, top.r + 1), up: true, why: 'Tutte le serie al massimo del range: +1 ripetizione.' };
+      return { w: top.w, r: Math.min(planEx.hi, top.r + 1), why: 'Stesso carico finché chiudi tutte le serie a ' + planEx.hi + ' ripetizioni a ' + eff(targetRpe) + '.' };
     }
     var twice = perf.length === 2 && closed(perf[0]) && closed(perf[1]) && topOf(perf[1].sets).w === top.w;
-    if (twice && step > 0) return { w: top.w + step, r: planEx.lo, up: true, why: 'Range chiuso in alto a RPE ≤ ' + GT.fmt(targetRpe) + ' per due sessioni: +' + GT.fmt(step) + ' kg.' };
-    if (twice && step === 0) return { w: 0, r: Math.min(planEx.hi + 2, top.r + 1), up: true, why: 'Range chiuso per due sessioni: +1 ripetizione.' };
+    var tj = targetAt(perf[0]), effTj = GT.state && GT.state.effort === 'RIR' ? 'RIR ≥ ' + GT.fmt(10 - tj) : 'RPE ≤ ' + GT.fmt(tj);
+    if (twice && step > 0) return { w: top.w + step, r: planEx.lo, up: true, why: 'Range chiuso in alto (' + effTj + ') per due sessioni: +' + GT.fmtKg(step) + ' kg.' };
+    if (twice && step === 0) return { w: top.w, r: Math.min(planEx.hi + 2, top.r + 1), up: true, why: 'Range chiuso per due sessioni: +1 ripetizione.' };
     if (closed(last)) return { w: top.w, r: planEx.hi, why: 'Range chiuso in alto: conferma lo stesso carico, poi si sale.' };
     return { w: top.w, r: Math.min(planEx.hi, top.r + 1), why: 'Stesso carico, punta a una ripetizione in più.' };
   };
@@ -229,7 +277,8 @@
       day.ex.forEach(function (x) {
         var t = GT.targetFor(plan, x, today), s = GT.suggestion(st, x, t.rpe);
         if (s.up && s.w) {
-          out.push({ id: 'load-' + x.id, icon: 'ph-light ph-trend-up', title: 'Aumenta il carico · ' + GT.EXI[x.id].n, body: s.why + ' Prossima volta ' + GT.fmtKg(s.w) + ' kg × ' + s.r + '.', cta: 'Ok', kind: 'info' });
+          // id includes the load: each new increase is a new card, even after an earlier "Ok"
+          out.push({ id: 'load-' + x.id + '-' + s.w + '-' + s.r, icon: 'ph-light ph-trend-up', title: 'Aumenta il carico · ' + GT.EXI[x.id].n, body: s.why + ' Prossima volta ' + GT.fmtKg(s.w) + ' kg × ' + s.r + '.', cta: 'Ok', kind: 'info' });
         }
       });
     });
@@ -242,7 +291,8 @@
         out.push({ id: 'vol-' + m.k, icon: 'ph-light ph-stack', title: 'Più volume: ' + m.n, body: 'Il piano prevede ' + GT.fmt(ps[m.k]) + ' serie a settimana, sotto il minimo efficace di ' + m.mev + '. Aggiungo 1 serie a un esercizio per ' + m.n.toLowerCase() + '.', cta: 'Aggiungi', kind: 'addSet', data: { muscle: m.k } });
       });
     // 3. Deload next week
-    if (cw.index === plan.deloadIndex - 1) out.push({ id: 'deload-' + cw.cycle, icon: 'ph-light ph-battery-medium', title: 'Scarico la prossima settimana', body: 'Settimana ' + (plan.deloadIndex + 1) + ': stessi esercizi, circa 40% di serie in meno, RPE 6. Consolida il lavoro delle ultime settimane.', cta: 'Ok', kind: 'info' });
+    var nextIdx = (cw.index + 1) % plan.cycleWeeks;
+    if (GT.isDeloadWeek(plan, nextIdx) && nextIdx !== cw.index) out.push({ id: 'deload-' + cw.cycle + '-' + nextIdx, icon: 'ph-light ph-battery-medium', title: 'Scarico la prossima settimana', body: 'Settimana ' + (nextIdx + 1) + ': ' + GT.deloadText(plan, nextIdx) + ' Consolida il lavoro delle ultime settimane.', cta: 'Ok', kind: 'info' });
     // 4. Protein under target on most logged days
     var adh = GT.adherence(st).filter(function (a) { return a.logged; });
     var lowP = adh.filter(function (a) { return st.targets && a.prot < st.targets.p * 0.9; }).length;

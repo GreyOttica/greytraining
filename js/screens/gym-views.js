@@ -234,11 +234,17 @@ ${r.off ? html`<div style="display:flex;gap:4px;align-items:center;font-size:.75
     }
     const allowed = base.filter(e => GT.exAllowed(e, st.profile));
     const hidden = base.length - allowed.length;
-    const list = (showAll ? base : allowed).map(e => {
-      const ok = GT.exAllowed(e, st.profile);
-      const state = cur && e.id === cur.id ? 'Attuale' : inDay[e.id] ? 'Già nel giorno' : null;
-      return { e, ok, state, why: ok ? [] : whyNot(e, st.profile) };
-    });
+    // Exercises of the imported program (they are not in the library list): always offered first,
+    // starting with the one this slot had before a swap
+    const match = e => (mus === 'Tutti' || e.m === mus) && (!q || e.n.toLowerCase().indexOf(q) >= 0 || muscleName(e.m).toLowerCase().indexOf(q) >= 0);
+    const ownIds = (cur && cur.orig ? [cur.orig.id] : []).concat(Object.keys(plan.custom || {}));
+    const own = ownIds.filter((id, i) => ownIds.indexOf(id) === i && GT.EXI[id]).map(id => GT.EXI[id]).filter(match);
+    const list = own.map(e => ({ e, ok: true, own: true, state: cur && e.id === cur.id ? 'Attuale' : inDay[e.id] ? 'Già nel giorno' : null, why: [] }))
+      .concat((showAll ? base : allowed).map(e => {
+        const ok = GT.exAllowed(e, st.profile);
+        const state = cur && e.id === cur.id ? 'Attuale' : inDay[e.id] ? 'Già nel giorno' : null;
+        return { e, ok, state, why: ok ? [] : whyNot(e, st.profile) };
+      }));
 
     const select = e => {
       if (swapMode) A.planSwap(day.id, st.pickIndex, e.id);
@@ -265,7 +271,7 @@ ${chips.map(c => { const a = c[0] === mus; return html`<button key=${c[0]} onCli
 <div style="display:flex;flex-direction:column">
 ${list.map(x => html`<button key=${x.e.id} onClick=${() => select(x.e)} disabled=${!!x.state} style=${`display:grid;grid-template-columns:56px 1fr auto;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--c-line);text-align:left;opacity:${x.state ? '.45' : '1'}`}>
 <div style="width:56px;height:56px;border-radius:8px;background:var(--c-s2);display:grid;place-items:center"><i class="ph-fill ph-play" style="font-size:16px;color:var(--c-fg3)"></i></div>
-<div style="min-width:0"><div style="font-weight:700;font-size:.9375rem">${x.e.n}</div><div style="font-size:.8125rem;color:var(--c-fg3);margin-top:2px">${muscleName(x.e.m)} · ${GT.eqLabel(x.e)}</div>
+<div style="min-width:0"><div style="font-weight:700;font-size:.9375rem">${x.e.n}</div><div style="font-size:.8125rem;color:var(--c-fg3);margin-top:2px">${x.own ? 'Dalla tua scheda · ' : ''}${muscleName(x.e.m)} · ${GT.eqLabel(x.e)}</div>
 ${x.why.length ? html`<div style="display:flex;gap:4px;align-items:flex-start;font-size:.75rem;line-height:1.35;color:var(--c-fg2);margin-top:2px"><i class="ph-light ph-warning" style="font-size:13px;flex:none;margin-top:1px;color:var(--c-acc-t)"></i><span>${x.why.join(' · ')}</span></div>` : null}</div>
 ${x.state ? html`<span style="font-size:.75rem;font-weight:700;color:var(--c-fg3)">${x.state}</span>` : html`<i class=${swapMode ? 'ph-light ph-swap' : 'ph-light ph-plus-circle'} aria-hidden="true" style="font-size:22px;color:var(--c-fg2)"></i>`}
 </button>`)}

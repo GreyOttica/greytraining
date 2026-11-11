@@ -153,10 +153,32 @@
 
   // Exercises that come with an imported plan (plan.custom: { id: entry }) are added to GT.EXI
   // so every screen can show them; they do not appear in the library list (GT.CATALOG).
-  GT.registerCustom = function (plan) {
-    var c = plan && plan.custom;
-    if (!c) return;
-    Object.keys(c).forEach(function (id) { GT.EXI[id] = c[id]; });
+  // Accepts a plan ({ custom }) or a plain { id: entry } map (st.exLib, every exercise ever imported).
+  GT.registerCustom = function (src) {
+    var c = src && (src.custom || (src.days ? null : src));
+    if (!c || typeof c !== 'object') return;
+    Object.keys(c).forEach(function (id) { if (c[id] && c[id].n && (!GT.EXI[id] || GT.EXI[id].custom)) GT.EXI[id] = c[id]; });
+    familyCache = {};
+  };
+
+  // Ids whose logged history counts as the same lift: the library exercise and every imported
+  // exercise that names exactly that lift (entry.same, set by the importer: "Stacco rumeno" ->
+  // Stacco rumeno bilanciere yes, "Curl manubri inclinato" -> Curl manubri no; older imports
+  // without the flag never link). Used for load suggestions, PRs and charts, so importing a
+  // program does not reset history.
+  var familyCache = {};
+  GT.exFamily = function (id) {
+    if (familyCache[id]) return familyCache[id];
+    var e = GT.EXI[id], root = e && e.custom && e.base && e.same === true ? e.base : id, out = [root];
+    if (id !== root) out.push(id);
+    Object.keys(GT.EXI).forEach(function (k) {
+      var x = GT.EXI[k];
+      if (x.custom && x.base === root && x.same === true && out.indexOf(k) < 0) out.push(k);
+      // the same imported exercise listed twice in a day (top set + back-off: id, id-2)
+      else if (e && e.custom && x.custom && x.n === e.n && out.indexOf(k) < 0) out.push(k);
+    });
+    familyCache[id] = out;
+    return out;
   };
 
   // Equipment label shown in lists: the first required item, or "Corpo libero"
